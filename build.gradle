@@ -1,0 +1,82 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.2.0'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.groviate'
+version = '0.0.1-SNAPSHOT'
+
+ext {
+    sqliteVersion = '3.43.0.0'
+    hibernateDialectsVersion = '6.4.0.Final'
+}
+
+description = 'telegram-code-review-bot'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+configurations {
+    compileOnly {
+        extendsFrom annotationProcessor
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-configuration-processor'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+    developmentOnly 'org.springframework.boot:spring-boot-devtools'
+    compileOnly 'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok'
+
+    //Telegram
+    implementation "org.telegram:telegrambots-springboot-longpolling-starter:7.9.1"
+
+    //Spring AI
+    implementation("org.springframework.ai:spring-ai-starter-model-openai:1.0.0")
+
+    //BD / ORM
+    implementation "org.xerial:sqlite-jdbc:${sqliteVersion}"
+    implementation "org.hibernate.orm:hibernate-community-dialects:${hibernateDialectsVersion}"
+
+    //JSON
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.15.2'
+    implementation 'com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.15.2'
+
+    //Gitlab API
+    implementation 'org.gitlab4j:gitlab4j-api:6.0.0'
+
+    //HTTP клиент
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+
+    //Логер
+    implementation 'org.springframework.boot:spring-boot-starter-logging'
+    implementation 'net.logstash.logback:logstash-logback-encoder:7.4'
+
+    //Утилиты
+    implementation 'me.paulschwarz:spring-dotenv:4.0.0'
+
+    //Тесты
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'org.mockito:mockito-inline:5.2.0'
+    testImplementation 'org.mockito:mockito-core:5.2.0'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}

@@ -1,0 +1,21 @@
+# Настройки AI review bot
+code-review:
+  enabled: true
+  projectIds: [ 24, 13, 5, 14, 7, 10, 11, 8, 12, 4 ]
+  dry-run: true
+  max-files-per-review: 20
+  max-lines-per-file: 500
+
+spring:
+  ai: #Настройка конфигурации AI
+    openai:
+      api-key: ${OPENAI_API_KEY}
+      chat:
+        options:
+          model: gpt-4o-mini
+          temperature: 0.3
+
+gitlab:
+  api:
+    url: "${GITLAB_API_URL}"
+    token: "${GITLAB_API_TOKEN}"
