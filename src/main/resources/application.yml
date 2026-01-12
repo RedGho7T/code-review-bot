@@ -2,7 +2,7 @@
 code-review:
   enabled: true
   projectIds: [ 24, 13, 5, 14, 7, 10, 11, 8, 12, 4 ]
-  dry-run: true
+  dry-run: false
   max-files-per-review: 20
   max-lines-per-file: 500
 

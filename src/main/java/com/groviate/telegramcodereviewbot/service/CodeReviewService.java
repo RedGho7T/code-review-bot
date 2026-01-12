@@ -9,6 +9,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 /**
@@ -53,54 +54,65 @@ public class CodeReviewService {
      * @return результат анализа с оценкой и рекомендациями
      * @throws GitlabClientException - при ошибке
      */
-    public CodeReviewResult analyzeCode(MergeRequest mergeRequest, List<MergeRequestDiff> diffs) {
+    public CodeReviewResult analyzeCode(MergeRequest mergeRequest,
+                                        List<MergeRequestDiff> diffs)
+            throws GitlabClientException {
+
+        if (mergeRequest == null) {
+            throw new IllegalArgumentException("mergeRequest must not be null");
+        }
+
+        int filesCount = diffs == null ? 0 : diffs.size();
+
+        log.info("Начинаем анализ кода через OpenAI");
+        log.debug("MR: {}. Файлов: {}", mergeRequest.getId(), filesCount);
+
         try {
-            log.info("Начинаем анализ кода в MR: {} ({})", mergeRequest.getTitle(), mergeRequest.getId());
-
-            if (diffs == null || diffs.isEmpty()) {
-
+            if (filesCount == 0) {
                 log.warn("MR {} не содержит измененных файлов", mergeRequest.getId());
                 return createEmptyReview("Нет измененных файлов для анализа", 10);
             }
-            // Берём шаблон из файлов и подставляем реальные данные
-            String userPrompt = promptTemplateService.preparePrompt(
+
+            log.debug("Подготавливаем промпт для AI");
+            String prompt = promptTemplateService.preparePrompt(
                     diffs,
                     mergeRequest.getTitle(),
-                    mergeRequest.getDescription() != null ? mergeRequest.getDescription() : ""
+                    mergeRequest.getDescription() == null ? "" : mergeRequest.getDescription()
             );
-            log.debug("Промт подготовлен, размер: {} символов", userPrompt.length());
+            log.debug("Промпт подготовлен, размер: {} символов", prompt.length());
 
-            //Отправляем запрос в Open AI
-            String aiResponse = chatClient
-                    // Начинаем построение запроса
-                    .prompt()
-                    // Добавляем системную инструкцию
+            log.info("Отправляем код на анализ в OpenAI");
+
+            String response = chatClient.prompt()
                     .system(promptTemplateService.getSystemPrompt())
-                    // Добавляем пользовательский промпт с кодом
-                    .user(userPrompt)
-                    // Отправляем запрос в OpenAI API
+                    .user(prompt)
                     .call()
-                    // Получаем результат
                     .content();
 
-            if (aiResponse == null) {
-                log.warn("AI вернул пустой ответ (NULL) для MR {}", mergeRequest.getId());
-                aiResponse = "";
+            if (response == null || response.isBlank()) {
+                log.warn("OpenAI вернул пустой ответ для MR {}", mergeRequest.getId());
+                return createEmptyReview("AI вернул пустой ответ", 0);
             }
 
-            log.debug("Получен ответ от AI, размер: {} символов", aiResponse.length());
+            log.info("Ответ от OpenAI получен, размер: {} символов", response.length());
+            log.debug("Парсим JSON ответ от OpenAI в CodeReviewResult");
 
-            CodeReviewResult result = parseAiResponse(aiResponse);
+            CodeReviewResult result = parseAiResponse(response);
 
-            log.info("Анализ завершен, оценка {}/10, предложений: {}",
-                    result.getScore(),
-                    result.getSuggestions().size());
+            if (result == null) {
+                throw new IllegalStateException("CodeReviewResult is null after parsing");
+            }
+
+            if (result.getAnalyzedAt() == null) {
+                result.setAnalyzedAt(LocalDateTime.now());
+            }
+
+            log.info("Анализ успешно завершён. Оценка: {}/10", result.getScore());
             return result;
 
         } catch (Exception e) {
-            log.error("Ошибка при анализе MR {} : {}", mergeRequest.getId(), e.getMessage());
-
-            throw new GitlabClientException("Ошибка при анализе кода", e);
+            log.error("Ошибка при анализе кода MR {}: {}", mergeRequest.getId(), e.getMessage(), e);
+            throw new GitlabClientException("Ошибка при анализе: " + e.getMessage(), e);
         }
     }
 
@@ -110,12 +122,14 @@ public class CodeReviewService {
      * @param jsonResponse - JSON ответ от GPT
      * @return объект CodeReviewResult с оценкой и рекомендациями
      */
+    @SuppressWarnings("u")
     private CodeReviewResult parseAiResponse(String jsonResponse) {
         try {
             //Извлекаем JSON объект из ответа
             String normalized = extractJsonObject(jsonResponse);
-
-            normalized = normalized.replace("\"suggestedFix\"", "\"suggestionFix\"");
+            if (normalized == null || normalized.isBlank()) {
+                return createEmptyReview("AI вернул пустой/некорректный JSON", 0);
+            }
 
             CodeReviewResult result = objectMapper.readValue(normalized, CodeReviewResult.class);
 
@@ -146,17 +160,81 @@ public class CodeReviewService {
     }
 
     /**
-     * Извлекает первый JSON объект вида {...} из текста
-     *
-     * @param text - текст для поиска JSON
-     * @return JSON объект в виде строки, или исходный текст если JSON не найден
+     * Возвращает JSON объект как String или null если не найден
      */
-    private String extractJsonObject(String text) {
-        int start = text.indexOf('{');
-        int end = text.lastIndexOf('}');
-        if (start >= 0 && end > start) {
-            return text.substring(start, end + 1);
+    private String extractJsonObject(String raw) {
+        if (raw == null) return null;
+        String s = raw.trim();
+
+        int start = s.indexOf('{');
+        if (start < 0) return null;
+
+        int end = findJsonEnd(s, start);
+        if (end < 0) return null;
+
+        return s.substring(start, end + 1);
+    }
+
+    /**
+     * Вспомогательный метод для поиска конца JSON объекта.
+     */
+    private int findJsonEnd(String s, int start) {
+        boolean inString = false;
+        boolean escaped = false;
+        int depth = 0;
+
+        for (int i = start; i < s.length(); i++) {
+            char c = s.charAt(i);
+
+            // Обновляем состояние экранирования (вместо двух continue)
+            escaped = updateEscapedState(c, escaped);
+
+            // Если текущий символ экранирован, пропускаем его обработку
+            if (escaped) {
+                continue;
+            }
+
+            // Когда встречаем кавычку (вне экранирования), переключаем флаг
+            if (c == '"') {
+                inString = !inString;
+            }
+
+            // Если мы не внутри строки - обновляем глубину и проверяем конец
+            if (!inString) {
+                depth = updateDepth(depth, c);
+
+                // Если глубина стала 0 - нашли закрывающую скобку JSON
+                if (depth == 0) {
+                    return i;
+                }
+            }
         }
-        return text;
+
+        return -1;
+    }
+
+    /**
+     * Управляет флагом экранирования символов.
+     */
+    private boolean updateEscapedState(char c, boolean wasEscaped) {
+        // Если предыдущий символ был \, текущий был экранирован
+        if (wasEscaped) {
+            return false;
+        }
+        // Если текущий символ \, он экранирует СЛЕДУЮЩИЙ символ
+        return c == '\\';
+    }
+
+    /**
+     * Обновление глубины вложенности скобок.
+     */
+    private int updateDepth(int depth, char c) {
+        if (c == '{') {
+            return depth + 1;
+        }
+        if (c == '}') {
+            return depth - 1;
+        }
+        return depth;
     }
 }

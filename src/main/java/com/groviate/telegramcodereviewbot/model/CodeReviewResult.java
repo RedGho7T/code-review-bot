@@ -1,6 +1,8 @@
 package com.groviate.telegramcodereviewbot.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -19,6 +21,8 @@ import java.util.List;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class CodeReviewResult {
 
+    @Min(0)
+    @Max(10)
     private Integer score; //Шкала оценки
 
     private String summary; //Краткое описание ревью

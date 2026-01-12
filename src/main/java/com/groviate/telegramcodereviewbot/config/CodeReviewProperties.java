@@ -17,7 +17,7 @@ public class CodeReviewProperties {
     private boolean enabled = true;
 
     //true - для тестирования, не публикует результаты в Gitlab
-    private boolean dryRun = true;
+    private boolean dryRun = false;
 
     //массив id проектов Habit
     private Integer[] projectIds = {};

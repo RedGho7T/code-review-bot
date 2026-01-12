@@ -1,8 +1,11 @@
 package com.groviate.telegramcodereviewbot.model;
 
+import lombok.Getter;
+
 /**
  * Категории проблем, которые может найти AI бот в коде
  */
+@Getter
 public enum ReviewCategory {
 
     NAMING_CONVENTION("Нарушение соглашения об именовании"),
@@ -23,10 +26,6 @@ public enum ReviewCategory {
 
     ReviewCategory(String description) {
         this.description = description;
-    }
-
-    public String getDescription() {
-        return description;
     }
 
 }

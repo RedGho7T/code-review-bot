@@ -19,14 +19,14 @@ public class RestClientConfig {
     ) {
         ClientHttpRequestInterceptor auth = (request, body, execution) -> {
             if (gitlabToken != null && !gitlabToken.isBlank()) {
-                request.getHeaders().add("PRIVATE-TOKEN", gitlabToken);
+                request.getHeaders().add("Private-Token", gitlabToken);
             }
             return execution.execute(request, body);
         };
 
         return builder
-                .setConnectTimeout(Duration.ofSeconds(5))
-                .setReadTimeout(Duration.ofSeconds(30))
+                .setConnectTimeout(Duration.ofSeconds(10))
+                .setReadTimeout(Duration.ofSeconds(120))
                 .additionalInterceptors(auth)
                 .build();
     }

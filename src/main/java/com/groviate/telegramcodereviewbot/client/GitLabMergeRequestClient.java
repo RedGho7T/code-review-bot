@@ -1,5 +1,6 @@
 package com.groviate.telegramcodereviewbot.client;
 
+import org.springframework.http.ResponseEntity;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.groviate.telegramcodereviewbot.exception.GitlabClientException;
 import com.groviate.telegramcodereviewbot.model.MergeRequest;
@@ -9,6 +10,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -186,5 +188,94 @@ public class GitLabMergeRequestClient {
             log.error("Ошибка при конвертации Map в MergeRequestDiff: {}", e.getMessage());
             throw new GitlabClientException("Ошибка при парсинге данных об изменениях в MR", e);
         }
+    }
+
+    /**
+     * Публикует комментарий к Merge Request
+     */
+    public void postComment(long projectId, long mergeRequestIid, String commentText) {
+        log.info("Публикуем комментарий в MR {}/{}", projectId, mergeRequestIid);
+
+        String url = String.format("%s/projects/%d/merge_requests/%d/notes",
+                gitlabApiUrl, projectId, mergeRequestIid);
+
+        try {
+            Map<String, String> requestBody = new HashMap<>();
+            requestBody.put("body", commentText);
+
+            restTemplate.postForEntity(url, requestBody, Void.class);
+
+            log.info("Комментарий опубликован в MR {}/{}", projectId, mergeRequestIid);
+
+        } catch (GitlabClientException e) {
+            log.error("GitlabClientException при публикации комментария: {}", e.getMessage(), e);
+            throw new GitlabClientException(
+                    "Не удалось опубликовать комментарий для MR " + projectId + "/" + mergeRequestIid + ": " + e.getMessage(),
+                    e
+            );
+        }
+    }
+
+    /**
+     * Публикует встроенный комментарий к строке кода
+     */
+    public void postLineComment(Integer projectId, Integer mergeRequestId, Integer diffId,
+                                Integer lineNumber, String commentText) {
+        log.info("Публикуем встроенный комментарий на строке {} в MR {}/{}/diff/{}",
+                lineNumber, projectId, mergeRequestId, diffId);
+
+        try {
+            String url = String.format("%s/projects/%d/merge_requests/%d/discussions",
+                    gitlabApiUrl, projectId, mergeRequestId);
+
+            // Подготавливаем тело запроса
+            Map<String, Object> position = new HashMap<>();
+            position.put("position_type", "text");
+            position.put("new_line", lineNumber);
+
+            Map<String, Object> requestBody = new HashMap<>();
+            requestBody.put("body", commentText);
+            requestBody.put("position", position);
+
+            // ← КЛЮЧЕВОЕ: просто отправляем Map без headers!
+            ResponseEntity<Void> response = restTemplate.postForEntity(
+                    url,
+                    requestBody,
+                    Void.class
+            );
+
+            // Проверяем статус ответа
+            if (response.getStatusCode().is2xxSuccessful()) {
+                log.info("Встроенный комментарий успешно опубликован в MR {}/{}, строка {}",
+                        projectId, mergeRequestId, lineNumber);
+            } else {
+                log.error("Ошибка при публикации встроенного комментария, статус: {}",
+                        response.getStatusCode());
+                throw new GitlabClientException(
+                        String.format("Ошибка публикации встроенного комментария: %s",
+                                response.getStatusCode()),
+                        null
+                );
+            }
+
+        } catch (Exception e) {
+            log.error("Ошибка при публикации встроенного комментария: {}", e.getMessage());
+            throw new GitlabClientException(
+                    String.format("Не удалось опубликовать встроенный комментарий в MR %d/%d: %s",
+                            projectId, mergeRequestId, e.getMessage()),
+                    e
+            );
+        }
+    }
+
+    /**
+     * Создаёт URL для GitLab API
+     */
+    private String createUrl(Integer projectId, Integer mergeRequestId, String endpoint) {
+        return String.format("%s/projects/%d/merge_requests/%d/%s",
+                gitlabApiUrl,
+                projectId,
+                mergeRequestId,
+                endpoint);
     }
 }
