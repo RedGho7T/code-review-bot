@@ -3,6 +3,9 @@
 MR Title: {title}
 MR Description: {description}
 
+РЕЛЕВАНТНЫЕ СТАНДАРТЫ (RAG):
+{rag_context}
+
 ИЗМЕНЁННЫЕ ФАЙЛЫ:
 {diffs}
 

@@ -237,7 +237,6 @@ public class GitLabMergeRequestClient {
             requestBody.put("body", commentText);
             requestBody.put("position", position);
 
-            // ← КЛЮЧЕВОЕ: просто отправляем Map без headers!
             ResponseEntity<Void> response = restTemplate.postForEntity(
                     url,
                     requestBody,

@@ -26,7 +26,7 @@ public class OpenAiTimeoutConfig {
             SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
 
             requestFactory.setConnectTimeout(30 * 1000);      // 30 сек подключение
-            requestFactory.setReadTimeout(180 * 1000);        // 180 сек (3 минуты!) ответ
+            requestFactory.setReadTimeout(180 * 1000);        // 180 сек ответ
 
             // Применяем ко всем RestClient
             restClientBuilder.requestFactory(requestFactory);

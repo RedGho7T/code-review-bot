@@ -31,19 +31,22 @@ public class CodeReviewService {
     private final ChatClient chatClient;
     private final PromptTemplateService promptTemplateService;
     private final ObjectMapper objectMapper;
+    private final RagContextService ragContextService;
 
     /**
      *
      * @param chatClient            - клиент для общения с OpenAI API
      * @param promptTemplateService - сервис подготовки промптов из файлов
+     * @param ragContextService     - сервис для получения RAG контекста
      * @param objectMapper          - Jackson для десериализации JSON
      */
     public CodeReviewService(ChatClient chatClient,
                              PromptTemplateService promptTemplateService,
-                             ObjectMapper objectMapper) {
+                             ObjectMapper objectMapper, RagContextService ragContextService) {
         this.chatClient = chatClient;
         this.promptTemplateService = promptTemplateService;
         this.objectMapper = objectMapper;
+        this.ragContextService = ragContextService;
     }
 
     /**
@@ -73,17 +76,23 @@ public class CodeReviewService {
                 return createEmptyReview("Нет измененных файлов для анализа", 10);
             }
 
+            String ragContext = getRAGContextForDiffs(diffs);
+            log.info("RAG контекст получен, размер: {} символов", ragContext.length());
+
             log.debug("Подготавливаем промпт для AI");
             String prompt = promptTemplateService.preparePrompt(
                     diffs,
                     mergeRequest.getTitle(),
-                    mergeRequest.getDescription() == null ? "" : mergeRequest.getDescription()
+                    mergeRequest.getDescription() == null ? "" : mergeRequest.getDescription(),
+                    ragContext
             );
+
             log.debug("Промпт подготовлен, размер: {} символов", prompt.length());
 
             log.info("Отправляем код на анализ в OpenAI");
 
-            String response = chatClient.prompt()
+            String response = chatClient
+                    .prompt()
                     .system(promptTemplateService.getSystemPrompt())
                     .user(prompt)
                     .call()
@@ -114,6 +123,59 @@ public class CodeReviewService {
             log.error("Ошибка при анализе кода MR {}: {}", mergeRequest.getId(), e.getMessage(), e);
             throw new GitlabClientException("Ошибка при анализе: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Получает RAG контекст (релевантные стандарты) для всех файлов в diffs
+     * <p>
+     * 1. Для каждого файла в diffs берем содержимое кода
+     * 2. Отправляем в RagContextService для поиска релевантных стандартов
+     * 3. Объединяем все найденные стандарты
+     * 4. Возвращаем как строку для добавления в промпт
+     *
+     * @param diffs список файлов с изменениями
+     * @return строка с RAG контекстом (стандартами кодирования)
+     */
+    private String getRAGContextForDiffs(List<MergeRequestDiff> diffs) {
+        log.debug("Получаем RAG контекст для {} файлов", diffs.size());
+
+        StringBuilder ragContextBuilder = new StringBuilder();
+
+        // Для каждого файла в MR
+        for (MergeRequestDiff diff : diffs) {
+            // Пропускаем удаленные файлы
+            if (diff.isDeletedFile()) {
+                log.debug("Пропускаю удаленный файл: {}", diff.getOldPath());
+                continue;
+            }
+
+            // Получаем содержимое файла (старую или новую версию)
+            String fileContent = diff.getDiff();
+            if (fileContent == null || fileContent.isEmpty()) {
+                log.debug("Пропускаю пустой файл");
+                continue;
+            }
+
+            // Спрашиваем RAG: какие стандарты релевантны для этого кода?
+            String fileRagContext = ragContextService.getContextForCode(fileContent);
+
+            // Если нашли релевантные стандарты, добавляем в общий контекст
+            if (!fileRagContext.isEmpty()) {
+                String filePath = diff.getNewPath() != null ? diff.getNewPath() : diff.getOldPath();
+                ragContextBuilder.append("\n--- Стандарты для файла: ").append(filePath).append(" ---");
+                ragContextBuilder.append(fileRagContext);
+            }
+        }
+
+        String result = ragContextBuilder.toString();
+
+        if (result.isEmpty()) {
+            log.debug("RAG контекст не найден (это OK, продолжаем без RAG)");
+            return "";
+        }
+
+        log.info("RAG контекст получен ({} символов)", result.length());
+        return result;
     }
 
     /**

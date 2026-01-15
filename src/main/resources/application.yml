@@ -2,9 +2,12 @@
 code-review:
   enabled: true
   projectIds: [ 24, 13, 5, 14, 7, 10, 11, 8, 12, 4 ]
-  dry-run: false
+  dry-run: true
   max-files-per-review: 20
   max-lines-per-file: 500
+  max-diff-chars-per-file: 12000
+  max-diff-chars-total: 60000
+  max-prompt-chars-total: 85000
 
 spring:
   ai: #Настройка конфигурации AI
@@ -14,8 +17,30 @@ spring:
         options:
           model: gpt-4o-mini
           temperature: 0.3
+        embedding:
+          options:
+            model: text-embedding-3-small
 
 gitlab:
   api:
     url: "${GITLAB_API_URL}"
     token: "${GITLAB_API_TOKEN}"
+
+# Конфигурация ChromaDB и RAG
+chroma:
+  url: "http://localhost:8000"
+  top-k: 5
+  similarity-threshold: 0.4
+  # Ограничения RAG-контекста
+  max-rag-chars-total: 8000
+  max-rag-chars-per-doc: 1500
+  max-rag-docs-per-source: 2
+  max-rag-sources: 3
+  # Ограничение входа для embeddings (чтобы не превысить 8192 tokens)
+  max-embedding-query-chars: 20000
+
+# Для отладки RAG)
+logging:
+  level:
+    org.springframework.ai: DEBUG
+    com.groviate.telegramcodereviewbot.service: DEBUG
