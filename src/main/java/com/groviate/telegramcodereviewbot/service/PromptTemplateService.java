@@ -10,7 +10,8 @@ import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
-import java.util.stream.Collectors;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Сервис для подготовки инструкций для AI
@@ -28,6 +29,9 @@ public class PromptTemplateService {
     private final String systemPrompt;
     private final String userPromptTemplate;
     private final CodeReviewProperties props;
+
+    private static final Pattern HUNK_PATTERN =
+            Pattern.compile("^@@ -(\\d+)(?:,(\\d+))? \\+(\\d+)(?:,(\\d+))? @@.*$");
 
     /**
      * @param systemPromptResource       - Resource с содержимым system-prompt.txt
@@ -78,7 +82,6 @@ public class PromptTemplateService {
             ragContext = "Стандарты не найдены";
         }
 
-        // Шаг 1: Форматировать каждый diff в строку + контролируем сборку по ограничениям
         int maxFiles = props.getMaxFilesPerReview();
         int maxTotalDiffChars = props.getMaxDiffCharsTotal();
 
@@ -89,55 +92,26 @@ public class PromptTemplateService {
         int omittedFiles = 0;
 
         for (MergeRequestDiff d : diffs) {
+            boolean appended = false;
 
-            // 1) Пропускаем удалённые файлы (обычно diff не нужен)
-            if (d.isDeletedFile()) {
+            if (!shouldOmitDiff(d) && includedFiles < maxFiles) {
+                String one = formatDiff(d);
+                appended = appendIfFits(diffsSb, one, separator, maxTotalDiffChars);
+                if (appended) {
+                    includedFiles++;
+                }
+            }
+
+            if (!appended) {
                 omittedFiles++;
-                continue;
             }
-
-            // 2) Пропускаем пустые diffs
-            String rawDiff = d.getDiff();
-            if (rawDiff == null || rawDiff.isBlank()) {
-                omittedFiles++;
-                continue;
-            }
-
-            // 3) Ограничение по количеству файлов
-            if (includedFiles >= maxFiles) {
-                omittedFiles++;
-                continue;
-            }
-
-            // 4) Форматируем один файл (ВАЖНО: formatDiff внутри уже применяет limitDiff)
-            String one = formatDiff(d);
-
-            // 5) Проверяем, влезет ли этот кусок в общий лимит по символам
-            int extra = (diffsSb.length() == 0)
-                    ? one.length()
-                    : separator.length() + one.length();
-
-            if (diffsSb.length() + extra > maxTotalDiffChars) {
-                omittedFiles++;
-                continue;
-            }
-
-            // 6) Добавляем separator между файлами
-            if (diffsSb.length() > 0) {
-                diffsSb.append(separator);
-            }
-            diffsSb.append(one);
-
-            includedFiles++;
         }
 
         String formattedDiffs = diffsSb.toString();
-
         if (omittedFiles > 0) {
             formattedDiffs += "\n\n...(пропущено файлов: " + omittedFiles + " из-за лимитов)\n";
         }
 
-        // Шаг 2: Собрать финальный промпт
         String prompt = userPromptTemplate
                 .replace("{title}", title != null ? title : "No title")
                 .replace("{description}", description != null ? description : "Нет описания")
@@ -156,6 +130,7 @@ public class PromptTemplateService {
 
         return prompt;
     }
+
 
     /**
      * Форматирует информацию об одном изменённом файле в читаемый текст
@@ -185,9 +160,12 @@ public class PromptTemplateService {
             sb.append("Status: MODIFIED (изменен)\n");
         }
 
-        String limited = limitDiff(diff.getDiff());
+        String annotated = annotateUnifiedDiff(diff.getDiff());
+
+        String limited = limitDiff(annotated);
+
         if (!limited.isBlank()) {
-            sb.append("\nCode Changes:\n");
+            sb.append("\nCode Changes (annotated with new_line):\n");
             sb.append(limited).append("\n");
         }
         return sb.toString();
@@ -210,4 +188,96 @@ public class PromptTemplateService {
         sb.append("...(diff обрезан по строкам: ").append(lines.length).append(" -> ").append(maxLines).append(")\n");
         return sb.toString();
     }
+
+    private String annotateUnifiedDiff(String diff) {
+        if (diff == null || diff.isBlank()) return "";
+
+        StringBuilder out = new StringBuilder();
+
+        int oldLine = -1;
+        int newLine = -1;
+        boolean inHunk = false;
+
+        String[] lines = diff.split("\n", -1);
+
+        for (String line : lines) {
+            Matcher m = HUNK_PATTERN.matcher(line);
+
+            if (m.matches()) {
+                oldLine = Integer.parseInt(m.group(1));
+                newLine = Integer.parseInt(m.group(3));
+                inHunk = true;
+                out.append(line).append("\n");
+            } else if (!inHunk || oldLine < 0 || newLine < 0) {
+                out.append(line).append("\n");
+            } else {
+                int[] updated = annotateHunkLine(out, line, oldLine, newLine);
+                oldLine = updated[0];
+                newLine = updated[1];
+            }
+        }
+
+        return out.toString();
+    }
+
+    private static boolean shouldOmitDiff(MergeRequestDiff d) {
+        if (d.isDeletedFile()) {
+            return true;
+        }
+        String rawDiff = d.getDiff();
+        return rawDiff == null || rawDiff.isBlank();
+    }
+
+    private static boolean appendIfFits(StringBuilder diffsSb,
+                                        String one,
+                                        String separator,
+                                        int maxTotalDiffChars) {
+        int extra = diffsSb.isEmpty()
+                ? one.length()
+                : separator.length() + one.length();
+
+        if (diffsSb.length() + extra > maxTotalDiffChars) {
+            return false;
+        }
+
+        if (!diffsSb.isEmpty()) {
+            diffsSb.append(separator);
+        }
+        diffsSb.append(one);
+        return true;
+    }
+
+    private static int[] annotateHunkLine(StringBuilder out, String line, int oldLine, int newLine) {
+        if (line.isEmpty() || isFileHeaderLine(line)) {
+            out.append(line).append("\n");
+            return new int[]{oldLine, newLine};
+        }
+
+        char prefix = line.charAt(0);
+        String content = line.length() > 1 ? line.substring(1) : "";
+
+        switch (prefix) {
+            case ' ' -> {
+                out.append(" ").append(newLine).append(": ").append(content).append("\n");
+                oldLine++;
+                newLine++;
+            }
+            case '+' -> {
+                out.append("+").append(newLine).append(": ").append(content).append("\n");
+                newLine++;
+            }
+            case '-' -> {
+                out.append("-").append(oldLine).append(": ").append(content).append("\n");
+                oldLine++;
+            }
+            default -> out.append(line).append("\n");
+        }
+
+        return new int[]{oldLine, newLine};
+    }
+
+    private static boolean isFileHeaderLine(String line) {
+        return line.startsWith("+++ ") || line.startsWith("--- ");
+    }
+
 }

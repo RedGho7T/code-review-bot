@@ -32,6 +32,9 @@ import java.util.Map;
 @Slf4j
 public class RagContextService {
 
+    private static final String RAG_HEADER = "\n\n=== РЕЛЕВАНТНЫЕ СТАНДАРТЫ КОДИРОВАНИЯ ===\n\n";
+    private static final String RAG_TRUNCATED = "...(RAG обрезан по лимиту)\n";
+    private static final String DOC_TRUNCATED = "\n...(обрезано)\n";
     private static final MediaType JSON = MediaType.get("application/json");
 
     private final RagConfig ragConfig;
@@ -60,19 +63,17 @@ public class RagContextService {
      * @return строка с релевантными стандартами, готовая добавить в промпт
      */
     public String getContextForCode(String code) {
-        if (code == null || code.trim().isEmpty()) {
+        if (code == null || code.isBlank()) {
             return "";
         }
 
         try {
-            String safeCode = code;
-
-            Integer maxQraw = ragConfig.getMaxEmbeddingQueryChars();
-            int maxQ = (maxQraw != null && maxQraw > 0) ? maxQraw : 20000;
-
-            if (safeCode.length() > maxQ) {
-                safeCode = safeCode.substring(0, maxQ);
+            int maxQ = ragConfig.getMaxEmbeddingQueryChars();
+            if (maxQ <= 0) {
+                maxQ = 20000;
             }
+
+            String safeCode = (code.length() > maxQ) ? code.substring(0, maxQ) : code;
 
             float[] codeEmbedding = embeddingModel.embed(safeCode);
 
@@ -199,46 +200,94 @@ public class RagContextService {
         int maxPerSource = ragConfig.getMaxRagDocsPerSource();
         int maxSources = ragConfig.getMaxRagSources();
 
-        Map<String, Integer> perSourceCount = new HashMap<>();
-        List<String> usedSources = new ArrayList<>();
+        // source -> count, O(1) проверки/инкременты, порядок источников сохраняем
+        Map<String, Integer> perSourceCount = new java.util.LinkedHashMap<>();
 
-        StringBuilder sb = new StringBuilder();
-        sb.append("\n\n=== РЕЛЕВАНТНЫЕ СТАНДАРТЫ КОДИРОВАНИЯ ===\n\n");
+        StringBuilder sb = new StringBuilder(Math.min(maxTotal, 4096));
+        sb.append(RAG_HEADER);
 
         for (RagDocument doc : documents) {
-            String source = doc.getSource();
-
-            if (!usedSources.contains(source)) {
-                if (usedSources.size() >= maxSources) continue;
-                usedSources.add(source);
+            if (processDocForPrompt(doc, perSourceCount, sb, maxTotal, maxPerDoc, maxPerSource, maxSources)) {
+                break; // единственный break/continue в цикле
             }
-
-            int n = perSourceCount.getOrDefault(source, 0);
-            if (n >= maxPerSource) continue;
-            perSourceCount.put(source, n + 1);
-
-            String content = doc.getContent();
-            if (content.length() > maxPerDoc) {
-                content = content.substring(0, maxPerDoc) + "\n...(обрезано)\n";
-            }
-
-            String block = String.format(
-                    "📚 %s (подобие: %.2f):\n%s\n\n",
-                    source,
-                    doc.getSimilarity(),
-                    content
-            );
-
-            if (sb.length() + block.length() > maxTotal) {
-                sb.append("...(RAG обрезан по лимиту)\n");
-                break;
-            }
-
-            sb.append(block);
         }
 
-        log.debug("RAG: sources={}, totalChars={}", usedSources.size(), sb.length());
+        log.debug("RAG: sources={}, totalChars={}", perSourceCount.size(), sb.length());
         return sb.toString();
+    }
+
+    /**
+     * @return true если нужно остановить цикл (достигли maxTotal и добавили маркер обрезки)
+     */
+    private static boolean processDocForPrompt(RagDocument doc,
+                                               Map<String, Integer> perSourceCount,
+                                               StringBuilder sb,
+                                               int maxTotal,
+                                               int maxPerDoc,
+                                               int maxPerSource,
+                                               int maxSources) {
+
+        String source = normalizeSource(doc.getSource());
+
+        Integer currentCount = perSourceCount.get(source);
+        boolean isNewSource = (currentCount == null);
+
+        if (isNewSource && perSourceCount.size() >= maxSources) {
+            return false; // пропускаем документ
+        }
+
+        int n = isNewSource ? 0 : currentCount;
+        if (n >= maxPerSource) {
+            return false; // пропускаем документ
+        }
+
+        // Важно: как и раньше, считаем документ "взятым" до проверки maxTotal
+        perSourceCount.put(source, n + 1);
+
+        String content = trimContent(doc.getContent(), maxPerDoc);
+
+        int beforeLen = sb.length();
+        appendDocBlock(sb, source, doc.getSimilarity(), content);
+
+        if (sb.length() > maxTotal) {
+            sb.setLength(beforeLen);
+            sb.append(RAG_TRUNCATED);
+            return true; // сигнал остановить цикл
+        }
+
+        return false;
+    }
+
+    private static String normalizeSource(String source) {
+        return (source == null || source.isBlank()) ? "unknown" : source;
+    }
+
+    private static String trimContent(String content, int maxPerDoc) {
+        if (content == null || content.isEmpty()) {
+            return "";
+        }
+        if (content.length() <= maxPerDoc) {
+            return content;
+        }
+        return content.substring(0, maxPerDoc) + DOC_TRUNCATED;
+    }
+
+    private static void appendDocBlock(StringBuilder sb, String source, double similarity, String content) {
+        sb.append("📚 ")
+                .append(source)
+                .append(" (подобие: ")
+                .append(format2(similarity))
+                .append("):\n")
+                .append(content)
+                .append("\n\n");
+    }
+
+    // Быстрый аналог "%.2f" без String.format()
+    private static String format2(double value) {
+        long scaled = Math.round(value * 100.0);
+        long intPart = scaled / 100;
+        long frac = Math.abs(scaled % 100);
+        return intPart + "." + (frac < 10 ? "0" : "") + frac;
     }
 
     /**

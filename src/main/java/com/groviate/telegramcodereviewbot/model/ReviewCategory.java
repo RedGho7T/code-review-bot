@@ -1,5 +1,6 @@
 package com.groviate.telegramcodereviewbot.model;
 
+import com.fasterxml.jackson.annotation.JsonEnumDefaultValue;
 import lombok.Getter;
 
 /**
@@ -20,6 +21,7 @@ public enum ReviewCategory {
 
     CODE_STYLE("Нарушение стиля кода"),
 
+    @JsonEnumDefaultValue
     OTHER("Другое");
 
     private final String description;

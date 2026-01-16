@@ -1,6 +1,8 @@
 package com.groviate.telegramcodereviewbot.service;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.groviate.telegramcodereviewbot.config.CodeReviewProperties;
 import com.groviate.telegramcodereviewbot.exception.GitlabClientException;
 import com.groviate.telegramcodereviewbot.model.CodeReviewResult;
 import com.groviate.telegramcodereviewbot.model.MergeRequest;
@@ -32,6 +34,7 @@ public class CodeReviewService {
     private final PromptTemplateService promptTemplateService;
     private final ObjectMapper objectMapper;
     private final RagContextService ragContextService;
+    private final CodeReviewProperties codeReviewProperties;
 
     /**
      *
@@ -42,11 +45,16 @@ public class CodeReviewService {
      */
     public CodeReviewService(ChatClient chatClient,
                              PromptTemplateService promptTemplateService,
-                             ObjectMapper objectMapper, RagContextService ragContextService) {
+                             ObjectMapper objectMapper,
+                             RagContextService ragContextService,
+                             CodeReviewProperties codeReviewProperties) {
         this.chatClient = chatClient;
         this.promptTemplateService = promptTemplateService;
         this.objectMapper = objectMapper;
         this.ragContextService = ragContextService;
+        this.codeReviewProperties = codeReviewProperties;
+        this.objectMapper.configure(DeserializationFeature.READ_UNKNOWN_ENUM_VALUES_USING_DEFAULT_VALUE, true);
+        this.objectMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
     }
 
     /**
@@ -76,8 +84,14 @@ public class CodeReviewService {
                 return createEmptyReview("Нет измененных файлов для анализа", 10);
             }
 
-            String ragContext = getRAGContextForDiffs(diffs);
-            log.info("RAG контекст получен, размер: {} символов", ragContext.length());
+            // Если в конфигурации CodeReviewProperties выключено - RAG не будет вызван
+            String ragContext = "";
+            if (codeReviewProperties.isRagEnabled()) {
+                ragContext = getRAGContextForDiffs(diffs);
+                log.info("RAG контекст получен, размер: {} символов", ragContext.length());
+            } else {
+                log.info("RAG отключен (code-review.rag-enabled=false), продолжаем без RAG");
+            }
 
             log.debug("Подготавливаем промпт для AI");
             String prompt = promptTemplateService.preparePrompt(
@@ -153,17 +167,14 @@ public class CodeReviewService {
             String fileContent = diff.getDiff();
             if (fileContent == null || fileContent.isEmpty()) {
                 log.debug("Пропускаю пустой файл");
-                continue;
-            }
+            } else {
+                String fileRagContext = ragContextService.getContextForCode(fileContent);
 
-            // Спрашиваем RAG: какие стандарты релевантны для этого кода?
-            String fileRagContext = ragContextService.getContextForCode(fileContent);
-
-            // Если нашли релевантные стандарты, добавляем в общий контекст
-            if (!fileRagContext.isEmpty()) {
-                String filePath = diff.getNewPath() != null ? diff.getNewPath() : diff.getOldPath();
-                ragContextBuilder.append("\n--- Стандарты для файла: ").append(filePath).append(" ---");
-                ragContextBuilder.append(fileRagContext);
+                if (!fileRagContext.isEmpty()) {
+                    String filePath = diff.getNewPath() != null ? diff.getNewPath() : diff.getOldPath();
+                    ragContextBuilder.append("\n--- Стандарты для файла: ").append(filePath).append(" ---");
+                    ragContextBuilder.append(fileRagContext);
+                }
             }
         }
 

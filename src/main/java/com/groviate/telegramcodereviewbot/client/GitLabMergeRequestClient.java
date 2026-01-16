@@ -1,5 +1,9 @@
 package com.groviate.telegramcodereviewbot.client;
 
+import com.groviate.telegramcodereviewbot.model.MergeRequestDiffRefs;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.groviate.telegramcodereviewbot.exception.GitlabClientException;
@@ -8,8 +12,13 @@ import com.groviate.telegramcodereviewbot.model.MergeRequestDiff;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriComponentsBuilder;
 
+import java.time.Instant;
+import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -70,6 +79,40 @@ public class GitLabMergeRequestClient {
                     .toList();
         } catch (Exception e) {
             log.error("Ошибка при получении списка MR для проекта {}: {}", projectId, e.getMessage());
+            throw new GitlabClientException("Ошибка при получении списка MR", e);
+        }
+    }
+
+    public List<MergeRequest> getOpenMergeRequestsUpdatedAfter(Integer projectId, Instant updatedAfter, int perPage) {
+        log.info("Получаем opened MR для проекта:{} updatedAfter={}", projectId, updatedAfter);
+
+        try {
+            String updatedAfterIso = DateTimeFormatter.ISO_INSTANT.format(updatedAfter);
+
+            String url = UriComponentsBuilder
+                    .fromHttpUrl(gitlabApiUrl)
+                    .pathSegment("projects", String.valueOf(projectId), "merge_requests")
+                    .queryParam("state", "opened")
+                    .queryParam("order_by", "updated_at")
+                    .queryParam("sort", "desc")
+                    .queryParam("per_page", perPage)
+                    .queryParam("updated_after", updatedAfterIso)
+                    .build()
+                    .toUriString();
+
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> response = restTemplate.getForObject(url, List.class);
+
+            if (response == null || response.isEmpty()) {
+                return List.of();
+            }
+
+            return response.stream()
+                    .map(map -> objectMapper.convertValue(map, MergeRequest.class))
+                    .toList();
+
+        } catch (Exception e) {
+            log.error("Ошибка при получении списка MR (updated_after) для проекта {}: {}", projectId, e.getMessage());
             throw new GitlabClientException("Ошибка при получении списка MR", e);
         }
     }
@@ -210,7 +253,8 @@ public class GitLabMergeRequestClient {
         } catch (GitlabClientException e) {
             log.error("GitlabClientException при публикации комментария: {}", e.getMessage(), e);
             throw new GitlabClientException(
-                    "Не удалось опубликовать комментарий для MR " + projectId + "/" + mergeRequestIid + ": " + e.getMessage(),
+                    "Не удалось опубликовать комментарий для MR " +
+                            projectId + "/" + mergeRequestIid + ": " + e.getMessage(),
                     e
             );
         }
@@ -219,62 +263,93 @@ public class GitLabMergeRequestClient {
     /**
      * Публикует встроенный комментарий к строке кода
      */
-    public void postLineComment(Integer projectId, Integer mergeRequestId, Integer diffId,
-                                Integer lineNumber, String commentText) {
-        log.info("Публикуем встроенный комментарий на строке {} в MR {}/{}/diff/{}",
-                lineNumber, projectId, mergeRequestId, diffId);
+    public void postLineComment(Integer projectId,
+                                Integer mergeRequestId,
+                                MergeRequestDiffRefs refs,
+                                String oldPath,
+                                String newPath,
+                                Integer newLine,
+                                String commentText) {
+
+        if (refs == null) {
+            throw new GitlabClientException("diff refs is null (cannot post inline comment)", null);
+        }
+        if (newPath == null || newPath.isBlank()) {
+            throw new GitlabClientException("newPath is blank (cannot post inline comment)", null);
+        }
+        if (oldPath == null || oldPath.isBlank()) {
+            oldPath = newPath;
+        }
+        if (newLine == null || newLine <= 0) {
+            throw new GitlabClientException("newLine is invalid: " + newLine, null);
+        }
+
+        String url = String.format("%s/projects/%d/merge_requests/%d/discussions",
+                gitlabApiUrl, projectId, mergeRequestId);
 
         try {
-            String url = String.format("%s/projects/%d/merge_requests/%d/discussions",
-                    gitlabApiUrl, projectId, mergeRequestId);
+            MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+            form.add("body", commentText);
 
-            // Подготавливаем тело запроса
-            Map<String, Object> position = new HashMap<>();
-            position.put("position_type", "text");
-            position.put("new_line", lineNumber);
+            form.add("position[base_sha]", refs.getBaseSha());
+            form.add("position[start_sha]", refs.getStartSha());
+            form.add("position[head_sha]", refs.getHeadSha());
+            form.add("position[position_type]", "text");
 
-            Map<String, Object> requestBody = new HashMap<>();
-            requestBody.put("body", commentText);
-            requestBody.put("position", position);
+            form.add("position[old_path]", oldPath);
+            form.add("position[new_path]", newPath);
+            form.add("position[new_line]", String.valueOf(newLine));
 
-            ResponseEntity<Void> response = restTemplate.postForEntity(
-                    url,
-                    requestBody,
-                    Void.class
-            );
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
 
-            // Проверяем статус ответа
-            if (response.getStatusCode().is2xxSuccessful()) {
-                log.info("Встроенный комментарий успешно опубликован в MR {}/{}, строка {}",
-                        projectId, mergeRequestId, lineNumber);
-            } else {
-                log.error("Ошибка при публикации встроенного комментария, статус: {}",
-                        response.getStatusCode());
-                throw new GitlabClientException(
-                        String.format("Ошибка публикации встроенного комментария: %s",
-                                response.getStatusCode()),
-                        null
-                );
+            HttpEntity<MultiValueMap<String, String>> entity = new HttpEntity<>(form, headers);
+
+            ResponseEntity<String> response = restTemplate.postForEntity(url, entity, String.class);
+
+            if (!response.getStatusCode().is2xxSuccessful()) {
+                throw new GitlabClientException("Inline comment failed: " + response.getStatusCode(), null);
             }
 
         } catch (Exception e) {
-            log.error("Ошибка при публикации встроенного комментария: {}", e.getMessage());
-            throw new GitlabClientException(
-                    String.format("Не удалось опубликовать встроенный комментарий в MR %d/%d: %s",
-                            projectId, mergeRequestId, e.getMessage()),
-                    e
-            );
+            throw new GitlabClientException("Не удалось опубликовать inline comment: " + e.getMessage(), e);
         }
     }
 
-    /**
-     * Создаёт URL для GitLab API
-     */
-    private String createUrl(Integer projectId, Integer mergeRequestId, String endpoint) {
-        return String.format("%s/projects/%d/merge_requests/%d/%s",
-                gitlabApiUrl,
-                projectId,
-                mergeRequestId,
-                endpoint);
+    public MergeRequestDiffRefs getLatestDiffRefs(Integer projectId, Integer mergeRequestId) {
+        String url = String.format("%s/projects/%d/merge_requests/%d/versions",
+                gitlabApiUrl, projectId, mergeRequestId);
+
+        try {
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> versions = restTemplate.getForObject(url, List.class);
+
+            if (versions != null && !versions.isEmpty()) {
+                Map<String, Object> latest = versions.getFirst();
+
+                String base = (String) latest.get("base_commit_sha");
+                String start = (String) latest.get("start_commit_sha");
+                String head = (String) latest.get("head_commit_sha");
+
+                if (base != null && start != null && head != null) {
+                    return MergeRequestDiffRefs.builder()
+                            .baseSha(base)
+                            .startSha(start)
+                            .headSha(head)
+                            .build();
+                }
+            }
+
+            // fallback: пробуем diff_refs из MR (но помним, что может быть пусто у новых MR)
+            MergeRequest mr = getMergeRequest(projectId, mergeRequestId);
+            if (mr != null && mr.getDiffRefs() != null) {
+                return mr.getDiffRefs();
+            }
+
+            throw new GitlabClientException("Не удалось получить diff refs (versions пуст / diff_refs пуст)", null);
+
+        } catch (Exception e) {
+            throw new GitlabClientException("Ошибка при получении MR versions/diff refs: " + e.getMessage(), e);
+        }
     }
 }

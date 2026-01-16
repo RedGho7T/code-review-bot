@@ -8,7 +8,6 @@ group = 'com.groviate'
 version = '0.0.1-SNAPSHOT'
 
 ext {
-    sqliteVersion = '3.43.0.0'
     hibernateDialectsVersion = '6.4.0.Final'
 }
 
@@ -50,8 +49,9 @@ dependencies {
     implementation("org.springframework.ai:spring-ai-starter-model-openai:1.0.0")
 
     //BD / ORM
-    implementation "org.xerial:sqlite-jdbc:${sqliteVersion}"
     implementation "org.hibernate.orm:hibernate-community-dialects:${hibernateDialectsVersion}"
+    implementation "org.flywaydb:flyway-core"
+    runtimeOnly("org.postgresql:postgresql:42.7.3")
 
     //JSON
     implementation 'com.fasterxml.jackson.core:jackson-databind:2.15.2'
@@ -75,6 +75,15 @@ dependencies {
     testImplementation 'org.mockito:mockito-inline:5.2.0'
     testImplementation 'org.mockito:mockito-core:5.2.0'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'org.testcontainers:junit-jupiter:1.19.0'
+    testImplementation 'org.mockito:mockito-inline:5.2.0'
+    testImplementation 'org.mockito:mockito-core:5.2.0'
+    testImplementation 'org.testng:testng:7.7.0'
+    testImplementation 'org.assertj:assertj-core:3.24.2'
+    testImplementation 'org.springframework.security:spring-security-test'
+    testImplementation 'com.h2database:h2'
+
 
     // Для логирования HTTP запросов
     testImplementation 'com.squareup.okhttp3:logging-interceptor:4.12.0'

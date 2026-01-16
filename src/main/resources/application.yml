@@ -1,13 +1,23 @@
 # Настройки AI review bot
 code-review:
   enabled: true
-  projectIds: [ 24, 13, 5, 14, 7, 10, 11, 8, 12, 4 ]
-  dry-run: true
+  projectIds: [ 24 ]
+  dry-run: false
+  rag-enabled: false
+  scheduler-enabled: false
+  scheduler-cron: "0 */15 * * * *"
+  scheduler-lookback-minutes: 30
   max-files-per-review: 20
   max-lines-per-file: 500
   max-diff-chars-per-file: 12000
   max-diff-chars-total: 60000
   max-prompt-chars-total: 85000
+  inline-enabled: true
+  max-inline-comments: 10
+  max-inline-comments-per-file: 3
+  max-inline-comment-chars: 1200
+  inline-publish-delay-ms: 200
+  status-comments-enabled: false
 
 spring:
   ai: #Настройка конфигурации AI
@@ -20,11 +30,27 @@ spring:
         embedding:
           options:
             model: text-embedding-3-small
+  datasource:
+    url: jdbc:postgresql://localhost:5432/review_bot
+    username: review_bot
+    password: review_bot
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
 
 gitlab:
   api:
     url: "${GITLAB_API_URL}"
     token: "${GITLAB_API_TOKEN}"
+  webhook:
+    secret: ""
 
 # Конфигурация ChromaDB и RAG
 chroma:
@@ -44,3 +70,6 @@ logging:
   level:
     org.springframework.ai: DEBUG
     com.groviate.telegramcodereviewbot.service: DEBUG
+    org.hibernate: INFO
+    org.springframework.boot.autoconfigure.jdbc: DEBUG
+    org.springframework.orm.jpa: DEBUG

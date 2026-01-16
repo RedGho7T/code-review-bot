@@ -4,8 +4,12 @@ import com.groviate.telegramcodereviewbot.client.GitLabMergeRequestClient;
 import com.groviate.telegramcodereviewbot.config.CodeReviewProperties;
 import com.groviate.telegramcodereviewbot.exception.GitlabClientException;
 import com.groviate.telegramcodereviewbot.model.CodeReviewResult;
+import com.groviate.telegramcodereviewbot.model.MergeRequestDiff;
+import com.groviate.telegramcodereviewbot.model.MergeRequestDiffRefs;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+
+import java.util.List;
 
 /**
  * Сервис для публикации результатов ревью в GitLab
@@ -22,13 +26,16 @@ public class GitLabCommentService {
     private final GitLabMergeRequestClient gitLabMergeRequestClient;
     private final CommentFormatterService commentFormatterService;
     private final CodeReviewProperties codeReviewProperties;
+    private final InlineCommentPlannerService inlineCommentPlannerService;
 
     public GitLabCommentService(GitLabMergeRequestClient gitLabMergeRequestClient,
                                 CommentFormatterService commentFormatterService,
-                                CodeReviewProperties codeReviewProperties) {
+                                CodeReviewProperties codeReviewProperties,
+                                InlineCommentPlannerService inlineCommentPlannerService) {
         this.gitLabMergeRequestClient = gitLabMergeRequestClient;
         this.commentFormatterService = commentFormatterService;
         this.codeReviewProperties = codeReviewProperties;
+        this.inlineCommentPlannerService = inlineCommentPlannerService;
     }
 
     /**
@@ -79,24 +86,31 @@ public class GitLabCommentService {
      *
      * @param projectId      - ID проекта в GitLab
      * @param mergeRequestId - ID Merge Request
-     * @param diffId         - ID конкретного diff (файла) в этом MR (GitLab присваивает ID каждому файлу)
      * @param lineNumber     - номер строки в файле где нужно оставить комментарий
      * @param commentText    - текст комментария (уже отформатированный в Markdown)
      * @throws GitlabClientException - если произойдёт ошибка
      */
-    public void publishLineComment(Integer projectId, Integer mergeRequestId, Integer diffId,
-                                   Integer lineNumber, String commentText) {
-        log.info("Публикуем встроенный комментарий на строке {} в MR {}/{}/diff/{}", lineNumber, projectId,
-                mergeRequestId, diffId);
+    public void publishLineComment(Integer projectId,
+                                   Integer mergeRequestId,
+                                   MergeRequestDiffRefs refs,
+                                   String oldPath,
+                                   String newPath,
+                                   Integer lineNumber,
+                                   String commentText) {
+        log.info("Публикуем inline-комментарий на строке {} в MR {}/{} ({})",
+                lineNumber, projectId, mergeRequestId, newPath);
 
         if (codeReviewProperties.isDryRun()) {
-            log.warn("Встроенный комментарий к строке {} не будет опубликован", lineNumber);
-            log.warn("Содержимое: {}", commentText);
+            log.warn("DRY-RUN: inline не будет опубликован. {}", commentText);
             return;
         }
 
         try {
-            gitLabMergeRequestClient.postLineComment(projectId, mergeRequestId, diffId, lineNumber, commentText);
+            gitLabMergeRequestClient.postLineComment(
+                    projectId, mergeRequestId,
+                    refs, oldPath, newPath,
+                    lineNumber, commentText
+            );
             log.info("Встроенный комментарий успешно опубликован на строке {} в MR {}/{}", lineNumber,
                     projectId, mergeRequestId);
         } catch (GitlabClientException e) {
@@ -104,6 +118,75 @@ public class GitLabCommentService {
 
             throw e;
         }
+    }
+
+    public void publishReviewWithInline(Integer projectId,
+                                        Integer mergeRequestId,
+                                        CodeReviewResult reviewResult,
+                                        List<MergeRequestDiff> diffs) {
+
+        // 1) общий итоговый комментарий
+        publishReview(projectId, mergeRequestId, reviewResult);
+
+        // 2) inline (если включено)
+        if (!codeReviewProperties.isInlineEnabled()) {
+            log.info("Inline comments disabled by config");
+            return;
+        }
+
+        if (codeReviewProperties.isDryRun()) {
+            log.warn("DRY-RUN: inline comments will not be published");
+            return;
+        }
+
+        if (diffs == null || diffs.isEmpty()) {
+            log.info("No diffs provided - skip inline comments");
+            return;
+        }
+
+        // 3) спланировать что постить (ЯВНЫЙ тип, без var)
+        List<InlineCommentPlannerService.InlineComment> planned =
+                inlineCommentPlannerService.plan(reviewResult, diffs, codeReviewProperties);
+
+        if (planned == null || planned.isEmpty()) {
+            log.info("No inline comments planned");
+            return;
+        }
+
+        // 4) получить diff refs
+        MergeRequestDiffRefs refs = gitLabMergeRequestClient.getLatestDiffRefs(projectId, mergeRequestId);
+
+        // 5) постим до N обсуждений
+        int success = 0;
+
+        int delayMs = codeReviewProperties.getInlinePublishDelayMs() == null
+                ? 200
+                : codeReviewProperties.getInlinePublishDelayMs();
+
+        for (InlineCommentPlannerService.InlineComment c : planned) {
+            try {
+                publishLineComment(projectId, mergeRequestId,
+                        refs,
+                        c.oldPath(),
+                        c.newPath(),
+                        c.newLine(),
+                        c.body());
+                success++;
+            } catch (Exception e) {
+                // важно: не валим весь review из-за одного невалидного inline
+                log.warn("Inline comment failed for {}:{} - {}",
+                        c.newPath(), c.newLine(), e.getMessage());
+            }
+            if (delayMs > 0) {
+                try {
+                    Thread.sleep(delayMs);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        log.info("Inline comments published: {}/{}", success, planned.size());
     }
 
     /**
@@ -116,6 +199,11 @@ public class GitLabCommentService {
      */
     public void publishStatusComment(Integer projectId, Integer mergeRequestId, String statusMessage) {
         log.debug("Публикуем комментарий о статусе для MR {}/{}: {}", projectId, mergeRequestId, statusMessage);
+
+        if (!codeReviewProperties.isStatusCommentsEnabled()) {
+            log.debug("Status comments disabled, skip publishStatusComment");
+            return;
+        }
 
         if (codeReviewProperties.isDryRun()) {
             log.warn("Комментарий о статусе не будет опубликован");

@@ -94,6 +94,9 @@ public class MergeRequest {
     @JsonProperty("squash")
     private Boolean squash; //true = делать сжатие в один коммит при мерже
 
+    @JsonProperty("diff_refs")
+    private MergeRequestDiffRefs diffRefs;
+
     /**
      * Вложенный класс для автора MR
      */
