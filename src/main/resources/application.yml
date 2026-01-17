@@ -1,26 +1,65 @@
 # Настройки AI review bot
 code-review:
-  enabled: true
-  projectIds: [ 24 ]
-  dry-run: false
-  rag-enabled: false
-  scheduler-enabled: false
-  scheduler-cron: "0 */15 * * * *"
-  scheduler-lookback-minutes: 30
+  # --- Основное управление ---
+  enabled: true               # глобально включить/выключить бота
+  dry-run: false              # true = ничего не публикуем в GitLab (только тест)
+  projectIds: [ 24 ]          # список projectId, где бот активен
+
+  # --- RAG (контекст код-стандартов) ---
+  rag-enabled: false          # включить/выключить RAG
+
+  # --- Ограничения анализа / размер промпта ---
   max-files-per-review: 20
   max-lines-per-file: 500
   max-diff-chars-per-file: 12000
   max-diff-chars-total: 60000
   max-prompt-chars-total: 85000
+
+  # --- Inline комментарии (по строкам diff) ---
   inline-enabled: true
   max-inline-comments: 10
   max-inline-comments-per-file: 3
   max-inline-comment-chars: 1200
   inline-publish-delay-ms: 200
+
+  # --- Scheduler (polling Merge Requests) ---
+  scheduler-enabled: false
+  scheduler-cron: "0 */15 * * * *"
+  scheduler-lookback-minutes: 30
+  scheduler-per-project-limit: 10
+
+  # --- Служебные статус-комментарии ---
   status-comments-enabled: false
 
+
+# GitLab
+gitlab:
+  api:
+    url: "${GITLAB_API_URL}"
+    token: "${GITLAB_API_TOKEN}"
+  webhook:
+    secret: ""
+
+
+# ChromaDB + RAG настройки
+chroma:
+  url: "http://localhost:8000"
+  top-k: 5
+  similarity-threshold: 0.4
+
+  # --- Ограничения RAG-контекста ---
+  max-rag-chars-total: 8000
+  max-rag-chars-per-doc: 1500
+  max-rag-docs-per-source: 2
+  max-rag-sources: 3
+
+  # --- Ограничение входа для embeddings ---
+  max-embedding-query-chars: 15000
+
+
+# Spring / инфраструктура
 spring:
-  ai: #Настройка конфигурации AI
+  ai: # Настройка конфигурации AI
     openai:
       api-key: ${OPENAI_API_KEY}
       chat:
@@ -30,42 +69,26 @@ spring:
         embedding:
           options:
             model: text-embedding-3-small
+
   datasource:
     url: jdbc:postgresql://localhost:5432/review_bot
     username: review_bot
     password: review_bot
     driver-class-name: org.postgresql.Driver
+
   jpa:
     hibernate:
       ddl-auto: validate
     properties:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
+
   flyway:
     enabled: true
     locations: classpath:db/migration
 
-gitlab:
-  api:
-    url: "${GITLAB_API_URL}"
-    token: "${GITLAB_API_TOKEN}"
-  webhook:
-    secret: ""
 
-# Конфигурация ChromaDB и RAG
-chroma:
-  url: "http://localhost:8000"
-  top-k: 5
-  similarity-threshold: 0.4
-  # Ограничения RAG-контекста
-  max-rag-chars-total: 8000
-  max-rag-chars-per-doc: 1500
-  max-rag-docs-per-source: 2
-  max-rag-sources: 3
-  # Ограничение входа для embeddings (чтобы не превысить 8192 tokens)
-  max-embedding-query-chars: 20000
-
-# Для отладки RAG)
+# Логи (для отладки RAG/AI)
 logging:
   level:
     org.springframework.ai: DEBUG

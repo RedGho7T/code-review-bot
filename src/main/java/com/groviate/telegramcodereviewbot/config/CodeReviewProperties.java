@@ -13,57 +13,110 @@ import org.springframework.stereotype.Component;
 @Data
 public class CodeReviewProperties {
 
-    //false - для ручного отключения бота в проекте
+    // Основное управление
+
+    /**
+     * Глобально включить/выключить бота
+     */
     private boolean enabled = true;
 
-    //true - для тестирования, не публикует результаты в Gitlab
-    private boolean dryRun = false;
+    /**
+     * Dry-run: не публиковать результаты в GitLab (ВАЖНО: только тест без отправки комментариев в Gitlab - TRUE)
+     */
+    private boolean dryRun = true;
 
-    //массив id проектов Habit
+    /**
+     * Список projectId, где бот активен (пусто = нигде/или зависит от логики использования)
+     */
     private Integer[] projectIds = {};
 
-    //для включения / отключения RAG
+    // RAG (контекст стандартов)
+
+    /**
+     * Включение/выключение RAG
+     */
     private boolean ragEnabled = true;
 
-    //настройка количества файлов для анализа за раз, пока на уточнении лимитов AI
+    // Лимиты анализа / промпта
+
+    /**
+     * Максимум файлов в одном ревью
+     */
     private Integer maxFilesPerReview = 20;
 
-    //максимум строк в одном файле для анализа, также на уточнении лимитов AI
+    /**
+     * Максимум строк в одном файле
+     */
     private Integer maxLinesPerFile = 500;
 
-    // лимит символов diff на один файл
-    private Integer maxDiffCharsPerFile = 12000;
+    /**
+     * Лимит символов diff на один файл
+     */
+    private Integer maxDiffCharsPerFile = 12_000;
 
-    // лимит символов всех diffs суммарно
-    private Integer maxDiffCharsTotal = 60000;
+    /**
+     * Лимит символов всех diffs суммарно
+     */
+    private Integer maxDiffCharsTotal = 60_000;
 
-    // общий лимит символов всего промпта (страховка)
-    private Integer maxPromptCharsTotal = 85000;
+    /**
+     * Общий лимит символов всего промпта (страховка)
+     */
+    private Integer maxPromptCharsTotal = 85_000;
 
-    // включение/выключение inline-комментариев в Гитлаб (к конкретным строкам с изменениями)
+    // Inline-комментарии (по строкам)
+
+    /**
+     * Включение/выключение inline-комментариев
+     */
     private boolean inlineEnabled = true;
 
-    // максимум inline сообщений
+    /**
+     * Максимум inline-комментариев на весь MR
+     */
     private Integer maxInlineComments = 10;
 
-    // чтобы не заспамить один файл
+    /**
+     * Максимум inline-комментариев на один файл
+     */
     private Integer maxInlineCommentsPerFile = 3;
 
-    // лимит символов одного inline сообщения
-    private Integer maxInlineCommentChars = 1200;
+    /**
+     * Лимит символов одного inline-комментария
+     */
+    private Integer maxInlineCommentChars = 1_200;
 
+    /**
+     * Пауза между публикациями inline-комментариев (мс)
+     */
     private Integer inlinePublishDelayMs = 200;
 
-    // включать/выключать polling scheduler
+    // Scheduler (polling MR)
+
+    /**
+     * Включать/выключать polling scheduler
+     */
     private boolean schedulerEnabled = false;
 
-    // cron для scheduler (по умолчанию раз в 15 минут)
+    /**
+     * Cron для scheduler (по умолчанию раз в 15 минут)
+     */
     private String schedulerCron = "0 */15 * * * *";
 
-    // “окно свежести”: проверять только MR, обновлённые за последние N минут
+    /**
+     * Окно свежести: проверять только MR, обновлённые за последние N минут
+     */
     private Integer schedulerLookBackMinutes = 30;
 
+    /**
+     * Лимит MR на проект за один проход
+     */
     private Integer schedulerPerProjectLimit = 10;
 
+    // Служебные статус-комментарии
+
+    /**
+     * Включение/выключение служебных статус-комментариев
+     */
     private boolean statusCommentsEnabled = true;
 }

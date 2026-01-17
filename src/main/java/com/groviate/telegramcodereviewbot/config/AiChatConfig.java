@@ -6,7 +6,6 @@ import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-
 /**
  * Конфигурационный класс для создания бина ChatClient
  */

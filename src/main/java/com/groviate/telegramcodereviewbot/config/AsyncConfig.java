@@ -7,6 +7,9 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.util.concurrent.Executor;
 
+/**
+ * Конфигурирует пул потоков для асинхронного выполнения ревью MR-ов.
+ */
 @Configuration
 @EnableAsync
 public class AsyncConfig {
@@ -14,9 +17,9 @@ public class AsyncConfig {
     @Bean(name = "reviewExecutor")
     public Executor reviewExecutor() {
         ThreadPoolTaskExecutor ex = new ThreadPoolTaskExecutor();
-        ex.setCorePoolSize(2);
-        ex.setMaxPoolSize(4);
-        ex.setQueueCapacity(200);
+        ex.setCorePoolSize(2); //2 готовых потока
+        ex.setMaxPoolSize(4); // максимум потоков в пулле
+        ex.setQueueCapacity(200); // очередь до 200
         ex.setThreadNamePrefix("mr-review-");
         ex.initialize();
         return ex;
