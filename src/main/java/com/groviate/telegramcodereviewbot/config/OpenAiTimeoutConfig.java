@@ -22,7 +22,6 @@ public class OpenAiTimeoutConfig {
         return restClientBuilder -> {
             log.info("Настраиваем RestClient с увеличенным timeout для OpenAI");
 
-            // Создаём SimpleClientHttpRequestFactory с большим timeout
             SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
 
             requestFactory.setConnectTimeout(30 * 1000);      // 30 сек подключение

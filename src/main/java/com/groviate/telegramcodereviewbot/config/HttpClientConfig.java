@@ -6,7 +6,8 @@ import org.springframework.context.annotation.Configuration;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Конфигурация для HTTP клиента OkHttp
+ * Конфигурация для HTTP клиента OkHttp.
+ * Используется для работы с ChromaDB.
  */
 @Configuration
 public class HttpClientConfig {

@@ -9,6 +9,9 @@ import org.springframework.web.client.RestTemplate;
 
 import java.time.Duration;
 
+/**
+ * Конфигурация RestTemplate - HTTP клиента для работы с GitLab API.
+ */
 @Configuration
 public class RestClientConfig {
 

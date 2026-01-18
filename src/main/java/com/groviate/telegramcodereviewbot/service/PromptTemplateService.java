@@ -75,10 +75,14 @@ public class PromptTemplateService {
                                 String title,
                                 String description,
                                 String ragContext) {
-        log.debug("Подготавливаю промпт для анализа {} измененных файлов", diffs.size());
 
-        if (ragContext == null || ragContext.trim().isEmpty()) {
-            log.warn("RAG контекст пустой");
+        List<MergeRequestDiff> safeDiffs = diffs == null ? List.of() : diffs;
+        log.debug("Подготавливаю промпт для анализа {} измененных файлов", safeDiffs.size());
+
+        if (!props.isRagEnabled()) {
+            ragContext = "";
+        } else if (ragContext == null || ragContext.isBlank()) {
+            log.warn("RAG включен, но контекст не найден");
             ragContext = "Стандарты не найдены";
         }
 
@@ -91,18 +95,18 @@ public class PromptTemplateService {
         int includedFiles = 0;
         int omittedFiles = 0;
 
-        for (MergeRequestDiff d : diffs) {
-            boolean appended = false;
+        for (MergeRequestDiff d : safeDiffs) {
 
-            if (!shouldOmitDiff(d) && includedFiles < maxFiles) {
-                String one = formatDiff(d);
-                appended = appendIfFits(diffsSb, one, separator, maxTotalDiffChars);
-                if (appended) {
-                    includedFiles++;
-                }
+            if (shouldOmitDiff(d) || includedFiles >= maxFiles) {
+                omittedFiles++;
+                continue;
             }
 
-            if (!appended) {
+            String one = formatDiff(d);
+
+            if (appendIfFits(diffsSb, one, separator, maxTotalDiffChars)) {
+                includedFiles++;
+            } else {
                 omittedFiles++;
             }
         }
@@ -124,13 +128,12 @@ public class PromptTemplateService {
             prompt = prompt.substring(0, maxPrompt) + "\n...(prompt обрезан по лимиту)\n";
         }
 
-        log.info("Статистика итогового промта: includedFiles={}, omittedFiles={}, diffsChars={}, " +
-                        "ragChars={}, promptChars={}",
+        log.info("Статистика итогового промта: " +
+                        "includedFiles={}, omittedFiles={}, diffsChars={}, ragChars={}, promptChars={}",
                 includedFiles, omittedFiles, formattedDiffs.length(), ragContext.length(), prompt.length());
 
         return prompt;
     }
-
 
     /**
      * Форматирует информацию об одном изменённом файле в читаемый текст

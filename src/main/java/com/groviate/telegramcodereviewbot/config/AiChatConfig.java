@@ -7,7 +7,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Конфигурационный класс для создания бина ChatClient
+ * Конфигурационный класс для создания и настройки ChatClient.
  */
 @Configuration
 @Slf4j

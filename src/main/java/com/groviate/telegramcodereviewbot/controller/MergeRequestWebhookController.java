@@ -7,7 +7,11 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
+import java.util.concurrent.RejectedExecutionException;
 
+/**
+ * Получает события от GitLab (создание/обновление MR) и запускает анализ через ReviewOrchestrator
+ */
 @RestController
 @Slf4j
 @RequestMapping("/api/webhook/gitlab")
@@ -60,14 +64,19 @@ public class MergeRequestWebhookController {
             return ResponseEntity.ok(Map.of(STATUS_KEY, STATUS_IGNORED, "reason", "no projectId or iid"));
         }
 
-        // реагируем только на действия, где обычно меняется код
+        // реагируем только на действия, где есть изменения в MR (open, reopen, update)
         if (!("open".equalsIgnoreCase(action)
                 || "reopen".equalsIgnoreCase(action)
                 || "update".equalsIgnoreCase(action))) {
             return ResponseEntity.ok(Map.of(STATUS_KEY, STATUS_IGNORED, ACTION_KEY, action));
         }
 
-        orchestrator.enqueueReview(projectId, mrIid);
+        try {
+            orchestrator.enqueueReview(projectId, mrIid);
+        } catch (RejectedExecutionException e) {
+            return ResponseEntity.status(503)
+                    .body(Map.of(STATUS_KEY, "queue_full", "error", e.getMessage()));
+        }
 
         return ResponseEntity.ok(Map.of(
                 STATUS_KEY, "queued",

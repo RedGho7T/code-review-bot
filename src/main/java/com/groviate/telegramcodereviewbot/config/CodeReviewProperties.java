@@ -23,7 +23,7 @@ public class CodeReviewProperties {
     /**
      * Dry-run: не публиковать результаты в GitLab (ВАЖНО: только тест без отправки комментариев в Gitlab - TRUE)
      */
-    private boolean dryRun = true;
+    private boolean dryRun = false;
 
     /**
      * Список projectId, где бот активен (пусто = нигде/или зависит от логики использования)
@@ -52,17 +52,17 @@ public class CodeReviewProperties {
     /**
      * Лимит символов diff на один файл
      */
-    private Integer maxDiffCharsPerFile = 12_000;
+    private Integer maxDiffCharsPerFile = 12000;
 
     /**
      * Лимит символов всех diffs суммарно
      */
-    private Integer maxDiffCharsTotal = 60_000;
+    private Integer maxDiffCharsTotal = 60000;
 
     /**
      * Общий лимит символов всего промпта (страховка)
      */
-    private Integer maxPromptCharsTotal = 85_000;
+    private Integer maxPromptCharsTotal = 85000;
 
     // Inline-комментарии (по строкам)
 
@@ -84,7 +84,7 @@ public class CodeReviewProperties {
     /**
      * Лимит символов одного inline-комментария
      */
-    private Integer maxInlineCommentChars = 1_200;
+    private Integer maxInlineCommentChars = 1200;
 
     /**
      * Пауза между публикациями inline-комментариев (мс)

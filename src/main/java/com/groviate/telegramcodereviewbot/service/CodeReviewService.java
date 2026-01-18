@@ -3,6 +3,7 @@ package com.groviate.telegramcodereviewbot.service;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.groviate.telegramcodereviewbot.config.CodeReviewProperties;
+import com.groviate.telegramcodereviewbot.config.RagConfig;
 import com.groviate.telegramcodereviewbot.exception.GitlabClientException;
 import com.groviate.telegramcodereviewbot.model.CodeReviewResult;
 import com.groviate.telegramcodereviewbot.model.MergeRequest;
@@ -35,6 +36,7 @@ public class CodeReviewService {
     private final ObjectMapper objectMapper;
     private final RagContextService ragContextService;
     private final CodeReviewProperties codeReviewProperties;
+    private final MergeRequestRagContextProvider ragContextProvider;
 
     /**
      *
@@ -47,12 +49,14 @@ public class CodeReviewService {
                              PromptTemplateService promptTemplateService,
                              ObjectMapper objectMapper,
                              RagContextService ragContextService,
-                             CodeReviewProperties codeReviewProperties) {
+                             CodeReviewProperties codeReviewProperties,
+                             MergeRequestRagContextProvider ragContextProvider) {
         this.chatClient = chatClient;
         this.promptTemplateService = promptTemplateService;
         this.objectMapper = objectMapper;
         this.ragContextService = ragContextService;
         this.codeReviewProperties = codeReviewProperties;
+        this.ragContextProvider = ragContextProvider;
         this.objectMapper.configure(DeserializationFeature.READ_UNKNOWN_ENUM_VALUES_USING_DEFAULT_VALUE, true);
         this.objectMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
     }
@@ -87,7 +91,7 @@ public class CodeReviewService {
             // Если в конфигурации CodeReviewProperties выключено - RAG не будет вызван
             String ragContext = "";
             if (codeReviewProperties.isRagEnabled()) {
-                ragContext = getRAGContextForDiffs(diffs);
+                ragContext = ragContextProvider.buildRagContext(diffs);
                 log.info("RAG контекст получен, размер: {} символов", ragContext.length());
             } else {
                 log.info("RAG отключен (code-review.rag-enabled=false), продолжаем без RAG");
@@ -137,56 +141,6 @@ public class CodeReviewService {
             log.error("Ошибка при анализе кода MR {}: {}", mergeRequest.getId(), e.getMessage(), e);
             throw new GitlabClientException("Ошибка при анализе: " + e.getMessage(), e);
         }
-    }
-
-    /**
-     * Получает RAG контекст (релевантные стандарты) для всех файлов в diffs
-     * <p>
-     * 1. Для каждого файла в diffs берем содержимое кода
-     * 2. Отправляем в RagContextService для поиска релевантных стандартов
-     * 3. Объединяем все найденные стандарты
-     * 4. Возвращаем как строку для добавления в промпт
-     *
-     * @param diffs список файлов с изменениями
-     * @return строка с RAG контекстом (стандартами кодирования)
-     */
-    private String getRAGContextForDiffs(List<MergeRequestDiff> diffs) {
-        log.debug("Получаем RAG контекст для {} файлов", diffs.size());
-
-        StringBuilder ragContextBuilder = new StringBuilder();
-
-        // Для каждого файла в MR
-        for (MergeRequestDiff diff : diffs) {
-            // Пропускаем удаленные файлы
-            if (diff.isDeletedFile()) {
-                log.debug("Пропускаю удаленный файл: {}", diff.getOldPath());
-                continue;
-            }
-
-            // Получаем содержимое файла (старую или новую версию)
-            String fileContent = diff.getDiff();
-            if (fileContent == null || fileContent.isEmpty()) {
-                log.debug("Пропускаю пустой файл");
-            } else {
-                String fileRagContext = ragContextService.getContextForCode(fileContent);
-
-                if (!fileRagContext.isEmpty()) {
-                    String filePath = diff.getNewPath() != null ? diff.getNewPath() : diff.getOldPath();
-                    ragContextBuilder.append("\n--- Стандарты для файла: ").append(filePath).append(" ---");
-                    ragContextBuilder.append(fileRagContext);
-                }
-            }
-        }
-
-        String result = ragContextBuilder.toString();
-
-        if (result.isEmpty()) {
-            log.debug("RAG контекст не найден (это OK, продолжаем без RAG)");
-            return "";
-        }
-
-        log.info("RAG контекст получен ({} символов)", result.length());
-        return result;
     }
 
     /**

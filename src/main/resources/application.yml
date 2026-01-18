@@ -6,7 +6,7 @@ code-review:
   projectIds: [ 24 ]          # список projectId, где бот активен
 
   # --- RAG (контекст код-стандартов) ---
-  rag-enabled: false          # включить/выключить RAG
+  rag-enabled: true          # включить/выключить RAG
 
   # --- Ограничения анализа / размер промпта ---
   max-files-per-review: 20
@@ -52,6 +52,11 @@ chroma:
   max-rag-chars-per-doc: 1500
   max-rag-docs-per-source: 2
   max-rag-sources: 3
+  rag-max-context-chars-total: 12000
+  rag-max-context-chars-general: 4500
+  rag-max-context-chars-per-file: 1500
+  rag-top-files: 5
+  rag-economy-mode: true
 
   # --- Ограничение входа для embeddings ---
   max-embedding-query-chars: 15000

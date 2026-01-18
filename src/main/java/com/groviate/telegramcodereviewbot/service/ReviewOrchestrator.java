@@ -5,6 +5,7 @@ import com.groviate.telegramcodereviewbot.config.CodeReviewProperties;
 import com.groviate.telegramcodereviewbot.entity.ReviewStatus;
 import com.groviate.telegramcodereviewbot.model.CodeReviewResult;
 import com.groviate.telegramcodereviewbot.repository.ReviewStatusRepository;
+import jakarta.persistence.OptimisticLockException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.annotation.Async;
@@ -13,6 +14,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.UUID;
 
+/**
+ * Главный оркестратор всего процесса ревью.
+ * Координирует работу всех сервисов: получение MR, анализ кода, публикацию результатов, отслеживание статуса.
+ */
 @Service
 @Slf4j
 public class ReviewOrchestrator {
@@ -22,7 +27,7 @@ public class ReviewOrchestrator {
     private final GitLabMergeRequestClient mrClient;
     private final CodeReviewService codeReviewService;
     private final GitLabCommentService commentService;
-    private final ReviewOrchestrator self;
+    private final ReviewOrchestrator self; //для асинхронного вызова
 
     public ReviewOrchestrator(CodeReviewProperties props,
                               ReviewStatusRepository statusRepository,
@@ -38,9 +43,14 @@ public class ReviewOrchestrator {
         this.self = self;
     }
 
+    /**
+     * Точка входа из scheduler / webhook.
+     * Проверяет включен ли бот.
+     * Вызывает async версию через self.
+     */
     public void enqueueReview(Integer projectId, Integer mrIid) {
         if (!props.isEnabled()) {
-            log.info("Bot disabled: skip review for {}/{}", projectId, mrIid);
+            log.info("Бот отключен: пропустить проверку для {}/{}", projectId, mrIid);
             return;
         }
         self.runReviewAsync(projectId, mrIid);
@@ -55,22 +65,22 @@ public class ReviewOrchestrator {
             if (mr == null) return;
 
             if (!"opened".equalsIgnoreCase(mr.getStatus())) {
-                log.info("[{}] MR not opened, skip: {}/{}", runId, projectId, mrIid);
+                log.info("[{}] MR не открыт, пропускаем: {}/{}", runId, projectId, mrIid);
                 return;
             }
             if (Boolean.TRUE.equals(mr.getDraft()) || Boolean.TRUE.equals(mr.getWorkInProgress())) {
-                log.info("[{}] MR is draft/WIP, skip: {}/{}", runId, projectId, mrIid);
+                log.info("[{}] MR черновик или не завершен: {}/{}", runId, projectId, mrIid);
                 return;
             }
 
             String headSha = mr.getSha();
             if (headSha == null || headSha.isBlank()) {
-                log.info("[{}] headSha empty, skip: {}/{}", runId, projectId, mrIid);
+                log.info("[{}] headSha отсутствует, пропускаем: {}/{}", runId, projectId, mrIid);
                 return;
             }
 
             if (!self.tryMarkRunning(projectId, mrIid, headSha)) {
-                log.info("[{}] Review already done or running: {}/{}", runId, projectId, mrIid);
+                log.info("[{}] Проверка уже проведена: {}/{}", runId, projectId, mrIid);
                 return;
             }
 
@@ -100,7 +110,7 @@ public class ReviewOrchestrator {
             self.markFailed(projectId, mrIid, err);
             commentService.publishStatusComment(projectId, mrIid,
                     "[" + runId + "] Ошибка ревью: " + truncate(err, 300));
-            log.error("[{}] Review failed for {}/{}", runId, projectId, mrIid, e);
+            log.error("[{}] Ревью завершилось ошибкой для: {}/{}", runId, projectId, mrIid, e);
         }
     }
 
@@ -120,8 +130,9 @@ public class ReviewOrchestrator {
             return false;
         }
 
-        // уже идёт ревью — пропускаем
-        if (status.getStatus() == ReviewStatus.ReviewState.RUNNING) {
+        // уже идёт ревью — пропускаем ТОЛЬКО если SHA тот же
+        if (status.getStatus() == ReviewStatus.ReviewState.RUNNING
+                && headSha.equals(status.getHeadSha())) {
             return false;
         }
 
@@ -132,7 +143,13 @@ public class ReviewOrchestrator {
         status.setStartedAt(java.time.Instant.now());
         status.setFinishedAt(null);
 
-        statusRepository.save(status);
+        try {
+            statusRepository.save(status);
+        } catch (OptimisticLockException e) {
+            log.warn("Данные в БД уже были изменены другим пользователем {}/{}", projectId, mrIid);
+            return false;
+        }
+
         return true;
     }
 
