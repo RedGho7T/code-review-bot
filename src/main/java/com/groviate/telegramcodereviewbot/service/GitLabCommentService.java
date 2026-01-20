@@ -39,7 +39,7 @@ public class GitLabCommentService {
     }
 
     /**
-     * ОСНОВНОЙ МЕТОД: Публикует результат ревью в GitLab MR
+     * Публикует результат ревью в GitLab MR
      * <p>
      * 1. Форматируем результат ревью из JSON в Markdown через commentFormatterService
      * 2. Проверяем режим dry-run (для тестирования без публикации)

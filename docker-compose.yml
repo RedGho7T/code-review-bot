@@ -1,17 +1,16 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:16
-    container_name: review-bot-postgres
     environment:
       POSTGRES_DB: review_bot
       POSTGRES_USER: review_bot
       POSTGRES_PASSWORD: review_bot
     ports:
       - "5432:5432"
+    volumes:
+      - review-bot-pg:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U review_bot -d review_bot" ]
+      test: ["CMD-SHELL", "pg_isready -U review_bot -d review_bot"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -19,21 +18,40 @@ services:
 
   chromadb:
     image: chromadb/chroma:0.5.20
-    container_name: chromadb
     ports:
       - "8000:8000"
     environment:
-      - LOG_LEVEL=info
       - IS_PERSISTENT=TRUE
       - PERSIST_DIRECTORY=/chroma/chroma
       - ANONYMIZED_TELEMETRY=FALSE
     volumes:
       - chroma_data:/chroma/chroma
-    healthcheck:
-      test: ["CMD", "/bin/bash", "-c", "cat < /dev/null > /dev/tcp/localhost/8000"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+    restart: unless-stopped
+
+  app:
+    build: .
+    profiles: ["prod"]
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+
+      DB_URL: jdbc:postgresql://postgres:5432/review_bot
+      DB_USER: review_bot
+      DB_PASSWORD: review_bot
+
+      CHROMA_URL: http://chromadb:8000
+
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: gpt-4o-mini
+
+      GITLAB_API_TOKEN: ${GITLAB_API_TOKEN}
+      GITLAB_API_URL: ${GITLAB_API_URL}
+
+      SPRING_DOCKER_COMPOSE_ENABLED: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

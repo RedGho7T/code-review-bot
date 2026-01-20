@@ -1,0 +1,17 @@
+spring:
+  jpa:
+    open-in-view: false
+  flyway:
+    enabled: true
+
+logging:
+  level:
+    root: INFO
+
+code-review:
+  dry-run: true
+  scheduler-enabled: true
+  rag-enabled: true
+
+chroma:
+  rag-economy-mode: true

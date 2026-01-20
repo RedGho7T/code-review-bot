@@ -35,15 +35,15 @@ code-review:
 # GitLab
 gitlab:
   api:
-    url: "${GITLAB_API_URL}"
-    token: "${GITLAB_API_TOKEN}"
+    url: "${GITLAB_API_URL:}"
+    token: "${GITLAB_API_TOKEN:}"
   webhook:
-    secret: ""
+    secret: "${GITLAB_WEBHOOK_SECRET:}"
 
 
 # ChromaDB + RAG настройки
 chroma:
-  url: "http://localhost:8000"
+  url: "${CHROMA_URL:http://localhost:8000}"
   top-k: 5
   similarity-threshold: 0.4
 
@@ -69,16 +69,19 @@ spring:
       api-key: ${OPENAI_API_KEY}
       chat:
         options:
-          model: gpt-4o-mini
+          model: ${OPENAI_MODEL:gpt-4o-mini}
           temperature: 0.3
         embedding:
           options:
             model: text-embedding-3-small
+  config:
+    import: "optional:file:./.env.properties"
+
 
   datasource:
-    url: jdbc:postgresql://localhost:5432/review_bot
-    username: review_bot
-    password: review_bot
+    url: "${DB_URL:jdbc:postgresql://localhost:5432/review_bot}"
+    username: "${DB_USER:review_bot}"
+    password: "${DB_PASSWORD:review_bot}"
     driver-class-name: org.postgresql.Driver
 
   jpa:
@@ -86,7 +89,7 @@ spring:
       ddl-auto: validate
     properties:
       hibernate:
-        dialect: org.hibernate.dialect.PostgreSQLDialect
+        dialect:
 
   flyway:
     enabled: true

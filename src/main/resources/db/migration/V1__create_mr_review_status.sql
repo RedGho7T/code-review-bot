@@ -10,6 +10,6 @@ create table if not exists mr_review_status (
                                                 updated_at timestamptz not null,
                                                 started_at timestamptz,
                                                 finished_at timestamptz,
-                                                version int not null default 0,
+                                                version bigint not null default 0,
                                                 constraint uk_mr_review_status_project_mr unique (project_id, mr_iid)
     );

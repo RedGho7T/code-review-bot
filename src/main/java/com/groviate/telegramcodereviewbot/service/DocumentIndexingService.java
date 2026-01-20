@@ -28,17 +28,17 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-@Service
-@Slf4j
 /**
  * Сервис для индексирования RAG документов в ChromaDB
- *
+ * <p>
  * Работает при запуске приложения (реализует ApplicationRunner):
  * 1. Читает документы из resources/rag-documents/
  * 2. Разбивает на куски (chunks)
  * 3. Генерирует embeddings (векторные представления текста)
  * 4. Загружает в ChromaDB
  */
+@Service
+@Slf4j
 public class DocumentIndexingService implements ApplicationRunner {
 
     private static final MediaType JSON = MediaType.get("application/json");

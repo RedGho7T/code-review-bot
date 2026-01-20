@@ -37,6 +37,7 @@ out/
 .vscode/
 
 # Env files (secrets)
-.env
+.env.properties
 .env.*
-!.env.example
+!.env.properties.example
+/.env

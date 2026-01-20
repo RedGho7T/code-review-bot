@@ -1,0 +1,15 @@
+spring:
+  jpa:
+    open-in-view: true
+    config:
+      import: "optional:file:.env"
+
+logging:
+  level:
+    root: INFO
+    com.groviate.telegramcodereviewbot: DEBUG
+
+code-review:
+  dry-run: true
+  scheduler-enabled: false
+  rag-enabled: true

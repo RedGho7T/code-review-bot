@@ -34,6 +34,10 @@ public class ReviewRagTestController {
         this.reviewOrchestrator = reviewOrchestrator;
     }
 
+    private static final String KEY_PLANNED_INLINE = "planned_inline";
+    private static final String KEY_PUBLISHED = "published";
+    private static final String KEY_FAILED = "failed";
+
     /**
      * Запускает реальный сценарий бота (оркестратор сам опубликует итог + inline).
      */
@@ -62,7 +66,7 @@ public class ReviewRagTestController {
                         "newPath", c.newPath(),
                         "newLine", c.newLine(),
                         "oldPath", c.oldPath(),
-                        "bodyPreview", preview(c.body(), 240)
+                        "bodyPreview", preview(c.body())
                 ))
                 .toList();
 
@@ -71,7 +75,7 @@ public class ReviewRagTestController {
                 "summary", result.getSummary(),
                 "suggestions_total", result.getSuggestions() == null ? 0 : result.getSuggestions().size(),
                 "diff_files", diffs == null ? 0 : diffs.size(),
-                "planned_inline", planned.size(),
+                KEY_PLANNED_INLINE, planned.size(),
                 "planned_items", items
         );
     }
@@ -87,18 +91,18 @@ public class ReviewRagTestController {
 
         var planned = inlineCommentPlannerService.plan(result, diffs, codeReviewProperties);
         if (planned == null || planned.isEmpty()) {
-            return Map.of("planned_inline",
-                    0, "published",
-                    0, "failed", 0, "message",
+            return Map.of(KEY_PLANNED_INLINE,
+                    +0, KEY_PUBLISHED,
+                    +0, KEY_FAILED, 0, "message",
                     "No inline comments planned");
         }
 
         // dry-run support
         if (codeReviewProperties.isDryRun()) {
             return Map.of(
-                    "planned_inline", planned.size(),
-                    "published", 0,
-                    "failed", 0,
+                    KEY_PLANNED_INLINE, planned.size(),
+                    KEY_PUBLISHED, 0,
+                    KEY_FAILED, 0,
                     "message", "DRY-RUN enabled: nothing published"
             );
         }
@@ -125,11 +129,11 @@ public class ReviewRagTestController {
             }
         }
 
-        return Map.of("planned_inline", planned.size(), "published", ok, "failed", failed);
+        return Map.of(KEY_PLANNED_INLINE, planned.size(), KEY_PUBLISHED, ok, KEY_FAILED, failed);
     }
 
-    private static String preview(String s, int max) {
+    private static String preview(String s) {
         if (s == null) return "";
-        return s.length() > max ? s.substring(0, max) + "…" : s;
+        return s.length() > 240 ? s.substring(0, 240) + "…" : s;
     }
 }

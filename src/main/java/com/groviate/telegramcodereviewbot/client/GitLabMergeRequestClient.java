@@ -90,7 +90,7 @@ public class GitLabMergeRequestClient {
             String updatedAfterIso = DateTimeFormatter.ISO_INSTANT.format(updatedAfter);
 
             String url = UriComponentsBuilder
-                    .fromHttpUrl(gitlabApiUrl)
+                    .fromUriString(gitlabApiUrl)
                     .pathSegment("projects", String.valueOf(projectId), "merge_requests")
                     .queryParam("state", "opened")
                     .queryParam("order_by", "updated_at")

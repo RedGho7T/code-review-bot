@@ -3,7 +3,6 @@ package com.groviate.telegramcodereviewbot.service;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.groviate.telegramcodereviewbot.config.CodeReviewProperties;
-import com.groviate.telegramcodereviewbot.config.RagConfig;
 import com.groviate.telegramcodereviewbot.exception.GitlabClientException;
 import com.groviate.telegramcodereviewbot.model.CodeReviewResult;
 import com.groviate.telegramcodereviewbot.model.MergeRequest;
@@ -34,7 +33,6 @@ public class CodeReviewService {
     private final ChatClient chatClient;
     private final PromptTemplateService promptTemplateService;
     private final ObjectMapper objectMapper;
-    private final RagContextService ragContextService;
     private final CodeReviewProperties codeReviewProperties;
     private final MergeRequestRagContextProvider ragContextProvider;
 
@@ -42,19 +40,16 @@ public class CodeReviewService {
      *
      * @param chatClient            - клиент для общения с OpenAI API
      * @param promptTemplateService - сервис подготовки промптов из файлов
-     * @param ragContextService     - сервис для получения RAG контекста
      * @param objectMapper          - Jackson для десериализации JSON
      */
     public CodeReviewService(ChatClient chatClient,
                              PromptTemplateService promptTemplateService,
                              ObjectMapper objectMapper,
-                             RagContextService ragContextService,
                              CodeReviewProperties codeReviewProperties,
                              MergeRequestRagContextProvider ragContextProvider) {
         this.chatClient = chatClient;
         this.promptTemplateService = promptTemplateService;
         this.objectMapper = objectMapper;
-        this.ragContextService = ragContextService;
         this.codeReviewProperties = codeReviewProperties;
         this.ragContextProvider = ragContextProvider;
         this.objectMapper.configure(DeserializationFeature.READ_UNKNOWN_ENUM_VALUES_USING_DEFAULT_VALUE, true);
