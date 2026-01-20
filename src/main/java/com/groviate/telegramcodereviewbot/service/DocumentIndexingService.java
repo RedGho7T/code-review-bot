@@ -53,6 +53,13 @@ public class DocumentIndexingService implements ApplicationRunner {
     @Value("classpath:prompts/system-prompt.txt")
     private Resource systemPromptResource;
 
+    /**
+     * @param ragConfig      - конфигурация RAG (URL ChromaDB, параметры chunks)
+     * @param embeddingModel - Spring AI модель для генерации embeddings (OpenAI text-embedding-ada-002)
+     * @param httpClient     - OkHttp клиент для HTTP запросов в ChromaDB
+     * @param objectMapper   - Jackson для JSON сериализации
+     * @param resourceLoader - Spring ResourceLoader для загрузки документов из classpath
+     */
     public DocumentIndexingService(
             RagConfig ragConfig,
             EmbeddingModel embeddingModel,  // Spring AI автоматически инжектирует это
@@ -67,6 +74,15 @@ public class DocumentIndexingService implements ApplicationRunner {
         this.resourceLoader = resourceLoader;
     }
 
+    /**
+     * ApplicationRunner точка входа - выполняется при старте приложения
+     * <p>
+     * Проверяет доступность ChromaDB, инициализирует коллекцию и индексирует документы.
+     * При ошибке логирует warning и продолжает работу (RAG будет отключен).
+     *
+     * @param args - аргументы командной строки
+     * @throws Exception - при критических ошибках (редко, в основном логируется)
+     */
     @Override
     public void run(ApplicationArguments args) throws Exception {
         log.info("Запуск индексирования RAG документов");
@@ -89,7 +105,16 @@ public class DocumentIndexingService implements ApplicationRunner {
     }
 
     /**
-     * Создает или очищает коллекцию для стандартов кодирования
+     * Создает или получает существующую коллекцию "coding-standards" в ChromaDB
+     * <p>
+     * Процесс:
+     * <ol>
+     *   <li>POST /api/v1/collections с параметрами для создания</li>
+     *   <li>Если коллекция уже существует (код 409) - получает ID через GET /api/v1/collections/{name}</li>
+     *   <li>Сохраняет ID в поле codingStandardsCollectionId</li>
+     * </ol>
+     *
+     * @throws IOException - при ошибке сети или работы с ChromaDB
      */
     private void initializeChromaCollection() throws IOException {
         log.info("Инициализирую коллекцию 'coding-standards' в ChromaDB");
@@ -135,7 +160,17 @@ public class DocumentIndexingService implements ApplicationRunner {
     }
 
     /**
-     * Читает файлы из resources/rag-documents/ и индексирует их
+     * Индексирует все RAG документы из classpath:rag-documents/
+     * <p>
+     * Документы:
+     * - rag-documents/java-coding-standards.md
+     * - rag-documents/spring-boot-patterns.md
+     * - rag-documents/testing-standards.md
+     * - rag-documents/security-guidelines.md
+     * <p>
+     * Для каждого документа: загружает и разбивает на chunks → добавляет в ChromaDB.
+     *
+     * @throws IOException - при ошибке загрузки или работы с ChromaDB
      */
     private void indexRagDocuments() throws IOException {
         log.info("Начинаю индексирование RAG документов");
@@ -177,10 +212,10 @@ public class DocumentIndexingService implements ApplicationRunner {
     }
 
     /**
-     * Читает содержимое файла из resources
+     * Загружает содержимое документа из classpath:resources/
      *
-     * @param resourcePath путь типа "rag-documents/my-file.md"
-     * @return содержимое файла или null если не найден
+     * @param resourcePath - путь документа (например, "rag-documents/my-file.md")
+     * @return содержимое документа или null если не найден
      */
     private String loadDocumentContent(String resourcePath) {
         Resource resource = resourceLoader.getResource("classpath:" + resourcePath);
@@ -316,6 +351,13 @@ public class DocumentIndexingService implements ApplicationRunner {
         }
     }
 
+    /**
+     * Получает ID коллекции по имени из ChromaDB
+     *
+     * @param name - имя коллекции
+     * @return ID коллекции или null если не найдена
+     * @throws IOException - при ошибке сети
+     */
     private String getCollectionIdByName(String name) throws IOException {
         Request request = new Request.Builder()
                 .url(ragConfig.getUrl() + "/api/v1/collections/" + name)

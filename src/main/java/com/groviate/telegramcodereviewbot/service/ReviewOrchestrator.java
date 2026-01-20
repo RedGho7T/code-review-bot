@@ -15,8 +15,24 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.UUID;
 
 /**
- * Главный оркестратор всего процесса ревью.
- * Координирует работу всех сервисов: получение MR, анализ кода, публикацию результатов, отслеживание статуса.
+ * Главный оркестратор всего процесса ревью
+ * <p>
+ * Координирует работу всех сервисов и управляет жизненным циклом ревью:
+ * <ol>
+ *   <li>Получение информации о Merge Request из GitLab</li>
+ *   <li>Фильтрация нецелевых MR (draft, closed, work in progress)</li>
+ *   <li>Дедупликация по SHA коммита (не ревьюим один коммит дважды)</li>
+ *   <li>Анализ кода через CodeReviewService (OpenAI + RAG)</li>
+ *   <li>Публикация результатов в GitLab (общие и inline комментарии)</li>
+ *   <li>Отслеживание статуса ревью в БД (ReviewStatus entity)</li>
+ *   <li>Обработка ошибок с логированием и уведомлением в MR</li>
+ * </ol>
+ * <p>
+ * Использует асинхронную обработку через @Async для неблокирования webhook.
+ * <p>
+ * Паттерн self-injection (@Lazy ReviewOrchestrator self):
+ * Необходим для работы @Async и @Transactional аннотаций, так как Spring AOP работает
+ * через proxy. При вызове метода через this - proxy не активируется, через self - активируется.
  */
 @Service
 @Slf4j
@@ -29,6 +45,14 @@ public class ReviewOrchestrator {
     private final GitLabCommentService commentService;
     private final ReviewOrchestrator self; //для асинхронного вызова
 
+    /**
+     * @param props             - свойства приложения (enabled flag, dry-run mode, лимиты)
+     * @param statusRepository  - JPA репозиторий для сохранения статуса ревью в БД
+     * @param mrClient          - REST клиент для работы с GitLab API (получение MR, diffs, публикация комментариев)
+     * @param codeReviewService - сервис анализа кода через OpenAI (ChatClient + RAG контекст)
+     * @param commentService    - сервис публикации результатов в GitLab (форматирование + GitLab API)
+     * @param self              - @Lazy self-reference для вызова асинхронных и транзакционных методов
+     */
     public ReviewOrchestrator(CodeReviewProperties props,
                               ReviewStatusRepository statusRepository,
                               GitLabMergeRequestClient mrClient,
@@ -56,6 +80,24 @@ public class ReviewOrchestrator {
         self.runReviewAsync(projectId, mrIid);
     }
 
+    /**
+     * Асинхронное выполнение полного цикла ревью Merge Request
+     * <p>
+     * Выполняется в отдельном потоке. Может занимать 30-120 секунд.
+     * <p>
+     * 1. Получает MR из GitLab и проверяет статус (opened, не draft, не WIP)
+     * 2. Получает SHA последнего коммита для дедупликации
+     * 3. Пытается отметить начало ревью (если уже ревьюили SHA - выходит)
+     * 4. Получает список измененных файлов
+     * 5. Анализирует код через OpenAI (с RAG контекстом из ChromaDB)
+     * 6. Публикует результаты в GitLab (общие + inline комментарии)
+     * 7. Сохраняет статус SUCCESS в БД
+     * <p>
+     * При ошибке: логирует, сохраняет FAILED статус и публикует ошибку в MR.
+     *
+     * @param projectId - ID проекта в GitLab (например, 24)
+     * @param mrIid     - ID Merge Request (например, 260)
+     */
     @Async("reviewExecutor")
     public void runReviewAsync(Integer projectId, Integer mrIid) {
         String runId = UUID.randomUUID().toString().substring(0, 8);
@@ -114,6 +156,23 @@ public class ReviewOrchestrator {
         }
     }
 
+    /**
+     * Атомарно пытается отметить что ревью началось
+     * <p>
+     * Обеспечивает дедупликацию по SHA и защиту от race condition.
+     * <ol>
+     *   <li>Находит или создает ReviewStatus для projectId + mrIid</li>
+     *   <li>Проверяет: если SUCCESS + тот же SHA - уже ревьюили, возвращает false</li>
+     *   <li>Проверяет: если RUNNING + тот же SHA - уже ревьюят, возвращает false</li>
+     *   <li>Обновляет: status=RUNNING, headSha, attempts++, startedAt, очищает lastError</li>
+     *   <li>Сохраняет в БД. При OptimisticLockException - возвращает false</li>
+     * </ol>
+     *
+     * @param projectId - ID проекта в GitLab
+     * @param mrIid     - Internal ID Merge Request
+     * @param headSha   - SHA последнего коммита для дедупликации
+     * @return true если можно продолжать ревью, false если нужно пропустить
+     */
     @Transactional
     public boolean tryMarkRunning(Integer projectId, Integer mrIid, String headSha) {
         var status = statusRepository.findByProjectIdAndMrIid(projectId, mrIid)
@@ -153,6 +212,15 @@ public class ReviewOrchestrator {
         return true;
     }
 
+    /**
+     * Атомарно отмечает успешное завершение ревью
+     * <p>
+     * Обновляет ReviewStatus: status=SUCCESS, headSha, finishedAt, очищает lastError.
+     *
+     * @param projectId - ID проекта
+     * @param mrIid     - IID Merge Request
+     * @param headSha   - SHA проревьюенного коммита
+     */
     @Transactional
     public void markSuccess(Integer projectId, Integer mrIid, String headSha) {
         statusRepository.findByProjectIdAndMrIid(projectId, mrIid).ifPresent(s -> {
@@ -164,6 +232,15 @@ public class ReviewOrchestrator {
         });
     }
 
+    /**
+     * Атомарно отмечает завершение ревью с ошибкой
+     * <p>
+     * Обновляет ReviewStatus: status=FAILED, lastError (обрезанный до 2000 символов), finishedAt.
+     *
+     * @param projectId - ID проекта
+     * @param mrIid     - IID Merge Request
+     * @param error     - описание ошибки (обычно ClassName: message)
+     */
     @Transactional
     public void markFailed(Integer projectId, Integer mrIid, String error) {
         statusRepository.findByProjectIdAndMrIid(projectId, mrIid).ifPresent(s -> {
@@ -174,6 +251,13 @@ public class ReviewOrchestrator {
         });
     }
 
+    /**
+     * Обрезает строку до максимальной длины с добавлением многоточия
+     *
+     * @param s   - строка для обрезания (может быть null)
+     * @param max - максимальная длина
+     * @return обрезанная строка с "…" если превышен лимит, null если входная строка null
+     */
     private static String truncate(String s, int max) {
         if (s == null) return null;
         return s.length() > max ? s.substring(0, max) + "…" : s;

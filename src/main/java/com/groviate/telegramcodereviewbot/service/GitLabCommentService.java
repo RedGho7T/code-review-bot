@@ -120,6 +120,26 @@ public class GitLabCommentService {
         }
     }
 
+    /**
+     * Публикует результат ревью с встроенными (inline) комментариями
+     * <p>
+     * Комбинированный подход:
+     * <ol>
+     *   <li>Публикует общий комментарий с результатами ревью (оценка, summary, suggestions)</li>
+     *   <li>Получает последние diff refs для определения базового коммита</li>
+     *   <li>Планирует inline комментарии (выбирает CRITICAL/WARNING по лимитам)</li>
+     *   <li>Публикует inline комментарии с задержкой между ними (чтобы не спамить GitLab API)</li>
+     *   <li>Логирует количество успешно опубликованных inline комментариев</li>
+     * </ol>
+     * <p>
+     * Обрабатывает ошибки: если inline не удалось опубликовать - логирует warning и продолжает.
+     * Общий комментарий все равно был опубликован, поэтому пользователь увидит результаты.
+     *
+     * @param projectId      - ID проекта в GitLab
+     * @param mergeRequestId - ID Merge Request в проекте
+     * @param reviewResult   - результат ревью с suggestions от OpenAI
+     * @param diffs          - список MergeRequestDiff с информацией о файлах и изменениях
+     */
     public void publishReviewWithInline(Integer projectId,
                                         Integer mergeRequestId,
                                         CodeReviewResult reviewResult,

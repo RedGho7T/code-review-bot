@@ -10,7 +10,8 @@ import java.util.Map;
 import java.util.concurrent.RejectedExecutionException;
 
 /**
- * Получает события от GitLab (создание/обновление MR) и запускает анализ через ReviewOrchestrator
+ * Получает POST события на {@code /api/webhook/gitlab/merge-request} от GitLab о создании,
+ * повторно открытии или обновлении Merge Request'ов и ставит их в очередь на code review.
  */
 @RestController
 @Slf4j
@@ -24,12 +25,41 @@ public class MergeRequestWebhookController {
     private final ReviewOrchestrator orchestrator;
     private final String secret;
 
+    /**
+     * @param orchestrator - ReviewOrchestrator для постановки MR в очередь
+     * @param secret       - webhook secret из конфигурации gitlab.webhook.secret (опционально)
+     */
     public MergeRequestWebhookController(ReviewOrchestrator orchestrator,
                                          @Value("${gitlab.webhook.secret:}") String secret) {
         this.orchestrator = orchestrator;
         this.secret = secret;
     }
 
+    /**
+     * POST endpoint для получения webhook событий от GitLab
+     * <p>
+     * URL: {@code POST /api/webhook/gitlab/merge-request}
+     * <p>
+     * Проверки и фильтрация:
+     * <ol>
+     *   <li>Если secret установлен → проверяет X-Gitlab-Token header (403 если не совпадает)</li>
+     *   <li>Проверяет X-Gitlab-Event header содержит "merge request" (игнорирует другие события)</li>
+     *   <li>Извлекает из JSON payload:
+     *       <ul>
+     *           <li>projectId: из object_attributes.target_project_id → source_project_id → project.id</li>
+     *           <li>mrIid: из object_attributes.iid</li>
+     *           <li>action: из object_attributes.action</li>
+     *       </ul>
+     *   </li>
+     *   <li>Фильтрует по действиям: только "open", "reopen", "update" (игнорирует close, merge и т.д.)</li>
+     *   <li>Ставит в очередь через orchestrator.enqueueReview(projectId, mrIid)</li>
+     * </ol>
+     *
+     * @param token   - значение header {@code X-Gitlab-Token} (проверяется если secret установлен)
+     * @param event   - значение header {@code X-Gitlab-Event} (должно содержать "merge request")
+     * @param payload - JSON body от GitLab webhook с данными о MR
+     * @return ResponseEntity с JSON
+     */
     @PostMapping("/merge-request")
     public ResponseEntity<Map<String, Object>> onMergeRequest(
             @RequestHeader(value = "X-Gitlab-Token", required = false) String token,
@@ -86,11 +116,23 @@ public class MergeRequestWebhookController {
         ));
     }
 
+    /**
+     * Безопасное приведение Object к Map
+     *
+     * @param o - объект для приведения
+     * @return Map если o это Map, иначе пустой Map.of()
+     */
     @SuppressWarnings("unchecked")
     private static Map<String, Object> safeMap(Object o) {
         return (o instanceof Map<?, ?> m) ? (Map<String, Object>) m : Map.of();
     }
 
+    /**
+     * Преобразует Object в Integer безопасно
+     *
+     * @param o - объект для преобразования (может быть null, Number или String)
+     * @return Integer значение или null если невозможно преобразовать
+     */
     private static Integer intOrNull(Object o) {
         if (o == null) return null;
         if (o instanceof Number n) return n.intValue();

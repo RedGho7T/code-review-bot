@@ -10,6 +10,9 @@ import org.springframework.stereotype.Component;
 import java.time.Duration;
 import java.time.Instant;
 
+/**
+ * Планировщик для периодического запуска code review на Merge Request'ы
+ */
 @Slf4j
 @Component
 public class MergeRequestReviewScheduler {
@@ -18,6 +21,11 @@ public class MergeRequestReviewScheduler {
     private final GitLabMergeRequestClient mrClient;
     private final ReviewOrchestrator orchestrator;
 
+    /**
+     * @param props        - конфигурация code-review (cron, лимиты, project-ids)
+     * @param mrClient     - GitLab клиент для получения MR
+     * @param orchestrator - ReviewOrchestrator для постановки в очередь
+     */
     public MergeRequestReviewScheduler(CodeReviewProperties props,
                                        GitLabMergeRequestClient mrClient,
                                        ReviewOrchestrator orchestrator) {
@@ -26,6 +34,20 @@ public class MergeRequestReviewScheduler {
         this.orchestrator = orchestrator;
     }
 
+    /**
+     * Основной метод планировщика - выполняется по расписанию
+     * <p>
+     * Алгоритм:
+     * <ol>
+     *   <li>Проверяет конфигурацию (enabled, schedulerEnabled) - если отключено, выходит</li>
+     *   <li>Получает projectIds из конфигурации - если пусто, выходит</li>
+     *   <li>Вычисляет временное окно: now - lookBackMinutes (по умолчанию 30 минут)</li>
+     *   <li>Для каждого проекта:
+     *       <ul>
+     *           <li>Получает открытые MR обновленные в окне (max perProjectLimit)</li>
+     *           <li>Для каждого MR: ставит в очередь через orchestrator.enqueueReview()</li>
+     *           <li>При ошибке: логирует warning и продолжает</li>
+     */
     @Scheduled(cron = "${code-review.scheduler-cron:0 */10 * * * *}")
     public void tick() {
         if (!props.isEnabled() || !props.isSchedulerEnabled()) return;

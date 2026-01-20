@@ -174,6 +174,12 @@ public class PromptTemplateService {
         return sb.toString();
     }
 
+    /**
+     * Ограничивает размер diff по символам и строкам
+     *
+     * @param diff - исходный diff текст
+     * @return обрезанный diff если превышены лимиты, иначе оригинал
+     */
     private String limitDiff(String diff) {
         if (diff == null || diff.isBlank()) return "";
 
@@ -192,6 +198,14 @@ public class PromptTemplateService {
         return sb.toString();
     }
 
+    /**
+     * Аннотирует унифицированный diff с номерами новых строк
+     * <p>
+     * Преобразует обычный diff в версию с номерами строк для удобства AI.
+     *
+     * @param diff - унифицированный diff текст
+     * @return аннотированный diff с номерами строк
+     */
     private String annotateUnifiedDiff(String diff) {
         if (diff == null || diff.isBlank()) return "";
 
@@ -223,6 +237,13 @@ public class PromptTemplateService {
         return out.toString();
     }
 
+
+    /**
+     * Проверяет нужно ли пропустить diff для файла
+     *
+     * @param d - MergeRequestDiff для проверки
+     * @return true если файл удален или diff пустой
+     */
     private static boolean shouldOmitDiff(MergeRequestDiff d) {
         if (d.isDeletedFile()) {
             return true;
@@ -231,6 +252,15 @@ public class PromptTemplateService {
         return rawDiff == null || rawDiff.isBlank();
     }
 
+    /**
+     * Добавляет отформатированный diff в StringBuilder если хватает места
+     *
+     * @param diffsSb - StringBuilder с накопленными diffs
+     * @param one - один отформатированный diff для добавления
+     * @param separator - разделитель между diff
+     * @param maxTotalDiffChars - максимальный размер всех diffs
+     * @return true если diff был добавлен, false если не хватило места
+     */
     private static boolean appendIfFits(StringBuilder diffsSb,
                                         String one,
                                         String separator,
@@ -250,6 +280,15 @@ public class PromptTemplateService {
         return true;
     }
 
+    /**
+     * Аннотирует одну строку из hunk с номером строки
+     *
+     * @param out - StringBuilder для результата
+     * @param line - строка для аннотации
+     * @param oldLine - текущий номер старой строки
+     * @param newLine - текущий номер новой строки
+     * @return массив с обновленными [oldLine, newLine]
+     */
     private static int[] annotateHunkLine(StringBuilder out, String line, int oldLine, int newLine) {
         if (line.isEmpty() || isFileHeaderLine(line)) {
             out.append(line).append("\n");

@@ -12,25 +12,28 @@ import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/**
+ * Сервис для планирования встроенных (inline) комментариев в GitLab MR
+ * <p>
+ * Выбирает наиболее важные suggestions (CRITICAL, WARNING) для публикации как inline комментарии,
+ * соблюдая лимиты: maxInlineComments (общий), maxInlineCommentsPerFile.
+ * <p>
+ * Алгоритм:
+ * <ol>
+ *   <li>Фильтрует suggestions по severity (CRITICAL/WARNING) и валидности данных</li>
+ *   <li>Сортирует по severity (CRITICAL первыми)</li>
+ *   <li>Pass 1: выбирает комментарии соблюдая maxPerFile</li>
+ *   <li>Pass 2: если не добрали до maxTotal - разрешает overflow по файлам</li>
+ *   <li>Проверяет что номер строки валиден для inline comment (есть в diff)</li>
+ *   <li>Удаляет дубли по (filePath + lineNumber + category)</li>
+ * </ol>
+ */
 @Service
 @Slf4j
 public class InlineCommentPlannerService {
 
     private static final Pattern HUNK_PATTERN =
             Pattern.compile("^@@ -(\\d+)(?:,(\\d+))? \\+(\\d+)(?:,(\\d+))? @@.*$");
-
-    public record InlineComment(String oldPath, String newPath, Integer newLine, String body) {
-    }
-
-    private record Limits(int maxTotal, int maxPerFile, int maxChars) {
-
-        static Limits from(CodeReviewProperties props) {
-                int maxTotal = Optional.ofNullable(props.getMaxInlineComments()).orElse(10);
-                int maxPerFile = Optional.ofNullable(props.getMaxInlineCommentsPerFile()).orElse(3);
-                int maxChars = Optional.ofNullable(props.getMaxInlineCommentChars()).orElse(1200);
-                return new Limits(maxTotal, maxPerFile, maxChars);
-            }
-        }
 
     private static final class SelectionState {
         final List<InlineComment> selected = new ArrayList<>();
@@ -39,9 +42,19 @@ public class InlineCommentPlannerService {
         final Map<String, Set<Integer>> validNewLinesByNewPath = new HashMap<>();
     }
 
-    private record PickContext(Map<String, MergeRequestDiff> diffByPath, SelectionState state, Limits limits) {
-    }
-
+    /**
+     * Планирует список inline комментариев из результата ревью
+     *
+     * <ol>
+     *   <li>Pass 1: соблюдаем строгий лимит maxPerFile</li>
+     *   <li>Pass 2: если не набрали maxTotal - разрешаем overflow по файлам</li>
+     * </ol>
+     *
+     * @param result - CodeReviewResult с suggestions от OpenAI
+     * @param diffs  - список MergeRequestDiff с информацией о файлах и изменениях
+     * @param props  - свойства с лимитами (maxInlineComments, maxInlineCommentsPerFile, maxInlineCommentChars)
+     * @return список InlineComment для публикации, отсортированный по severity (CRITICAL первыми)
+     */
     public List<InlineComment> plan(CodeReviewResult result,
                                     List<MergeRequestDiff> diffs,
                                     CodeReviewProperties props) {
@@ -73,6 +86,12 @@ public class InlineCommentPlannerService {
         return state.selected;
     }
 
+    /**
+     * Индексирует diffs по путям файлов для быстрого поиска
+     *
+     * @param diffs - список MergeRequestDiff
+     * @return Map: filePath -> MergeRequestDiff (содержит и oldPath и newPath)
+     */
     private static Map<String, MergeRequestDiff> indexDiffsByPath(List<MergeRequestDiff> diffs) {
         Map<String, MergeRequestDiff> diffByPath = new HashMap<>();
         for (MergeRequestDiff d : diffs) {
@@ -82,6 +101,20 @@ public class InlineCommentPlannerService {
         return diffByPath;
     }
 
+    /**
+     * Фильтрует и сортирует suggestions для inline комментариев
+     * <p>
+     * Фильтры:
+     * - severity = CRITICAL или WARNING (INFO не публикуем inline)
+     * - fileName не null и не пустой
+     * - lineNumber > 0
+     * - message не пустой
+     * <p>
+     * Сортировка: CRITICAL (вес 3) -> WARNING (вес 2) -> INFO (вес 1)
+     *
+     * @param suggestions - все suggestions от OpenAI
+     * @return отфильтрованный и отсортированный список кандидатов
+     */
     private static List<CodeSuggestion> sortCandidates(List<CodeSuggestion> suggestions) {
         List<CodeSuggestion> candidates = suggestions.stream()
                 .filter(s -> s.getSeverity() == SuggestionSeverity.CRITICAL ||
@@ -98,6 +131,14 @@ public class InlineCommentPlannerService {
         return sorted;
     }
 
+    /**
+     * Проходит по отсортированным suggestions и выбирает для inline комментариев
+     *
+     * @param sorted              - отсортированные CodeSuggestion
+     * @param ctx                 - контекст с diffByPath, state, limits
+     * @param enforcePerFileLimit - true для Pass 1 (соблюдать maxPerFile),
+     *                            false для Pass 2 (разрешить overflow)
+     */
     private void pick(List<CodeSuggestion> sorted, PickContext ctx, boolean enforcePerFileLimit) {
         for (CodeSuggestion s : sorted) {
             if (ctx.state.selected.size() >= ctx.limits.maxTotal) {
@@ -113,6 +154,23 @@ public class InlineCommentPlannerService {
         }
     }
 
+    /**
+     * Пытается преобразовать CodeSuggestion в InlineComment
+     * <p>
+     * Проверяет:
+     * <ol>
+     *   <li>Находит diff для файла (по fileName из suggestion)</li>
+     *   <li>Проверяет лимит maxPerFile (если enforcePerFileLimit=true)</li>
+     *   <li>Проверяет что lineNumber валиден </li>
+     *   <li>Удаляет дубли по (filePath + lineNumber + category)</li>
+     *   <li>Форматирует body комментария</li>
+     * </ol>
+     *
+     * @param s                   - CodeSuggestion от OpenAI
+     * @param ctx                 - контекст выбора
+     * @param enforcePerFileLimit - соблюдать ли maxPerFile
+     * @return Optional.of(InlineComment) если успешно, Optional.empty() если пропускаем
+     */
     private Optional<InlineComment> toInlineComment(CodeSuggestion s,
                                                     PickContext ctx, boolean enforcePerFileLimit) {
         Optional<MergeRequestDiff> maybeDiff = resolveDiffForSuggestion(s, ctx.diffByPath);
@@ -127,7 +185,10 @@ public class InlineCommentPlannerService {
             return Optional.empty();
         }
 
-        Set<Integer> validNewLines = getOrComputeValidNewLines(newPath, diff.getDiff(), ctx.state.validNewLinesByNewPath);
+        Set<Integer> validNewLines =
+                getOrComputeValidNewLines(newPath,
+                        diff.getDiff(),
+                        ctx.state.validNewLinesByNewPath);
         Integer line = fixLineNumber(s.getLineNumber(), validNewLines);
         if (line == null) return Optional.empty();
 
@@ -144,6 +205,15 @@ public class InlineCommentPlannerService {
         return Optional.of(new InlineComment(oldPath, newPath, line, body));
     }
 
+    /**
+     * Находит diff для suggestion по fileName
+     * <p>
+     * Сначала точное совпадение, потом loose match (по имени файла без пути).
+     *
+     * @param s          - CodeSuggestion
+     * @param diffByPath - индекс diffs
+     * @return Optional.of(MergeRequestDiff) если найден
+     */
     private static Optional<MergeRequestDiff> resolveDiffForSuggestion(CodeSuggestion s,
                                                                        Map<String, MergeRequestDiff> diffByPath) {
         String rawPath = normalizePath(s.getFileName());
@@ -156,22 +226,40 @@ public class InlineCommentPlannerService {
         return Optional.ofNullable(loose);
     }
 
+    /**
+     * Получает newPath из diff (приоритет newPath, fallback oldPath)
+     */
     private static String resolveNewPath(MergeRequestDiff diff) {
         return diff.getNewPath() != null ? diff.getNewPath() : diff.getOldPath();
     }
 
+    /**
+     * Получает oldPath из diff (приоритет oldPath, fallback newPath)
+     */
     private static String resolveOldPath(MergeRequestDiff diff, String fallback) {
         return diff.getOldPath() != null ? diff.getOldPath() : fallback;
     }
 
+    /**
+     * Проверяет достигнут ли лимит комментариев для файла
+     */
     private static boolean isFileLimitReached(String newPath, Map<String,
             Integer> perFileCount, int maxPerFile) {
         return perFileCount.getOrDefault(newPath, 0) >= maxPerFile;
     }
 
+    /**
+     * Получает или вычисляет множество валидных номеров строк для inline комментариев
+     * <p>
+     * Кеширует результат в cache для производительности.
+     *
+     * @param newPath  - путь файла
+     * @param diffText - текст diff
+     * @param cache    - кеш validNewLines
+     * @return Set валидных номеров строк (context ' ' и addition '+')
+     */
     private static Set<Integer> getOrComputeValidNewLines(String newPath, String diffText,
                                                           Map<String, Set<Integer>> cache) {
-        // Fix для пункта (1): без lambda (diffText может быть не effectively final в вызывающем коде)
         Set<Integer> cached = cache.get(newPath);
         if (cached != null) return cached;
 
@@ -180,6 +268,9 @@ public class InlineCommentPlannerService {
         return computed;
     }
 
+    /**
+     * Возвращает вес severity для сортировки (CRITICAL=3, WARNING=2, INFO=1)
+     */
     private static int severityWeight(SuggestionSeverity s) {
         if (s == null) return 0;
         return switch (s) {
@@ -189,6 +280,12 @@ public class InlineCommentPlannerService {
         };
     }
 
+    /**
+     * Нормализует путь файла (удаляет "File:", backticks, ./, leading /)
+     *
+     * @param p - путь из suggestion.fileName
+     * @return нормализованный путь
+     */
     private static String normalizePath(String p) {
         if (p == null) return null;
         String s = p.trim();
@@ -199,6 +296,15 @@ public class InlineCommentPlannerService {
         return s;
     }
 
+    /**
+     * Пытается найти diff по loose match (по имени файла без пути)
+     * <p>
+     * Используется если точное совпадение не найдено.
+     *
+     * @param diffByPath - индекс diffs
+     * @param rawPath    - нормализованный путь из suggestion
+     * @return MergeRequestDiff если найден match, иначе null
+     */
     private static MergeRequestDiff tryFindByLooseMatch(Map<String, MergeRequestDiff> diffByPath,
                                                         String rawPath) {
         if (rawPath == null) return null;
@@ -216,7 +322,7 @@ public class InlineCommentPlannerService {
 
     /**
      * Собираем множество допустимых new_line, на которые можно оставить inline comment.
-     * Учитываем только строки контекста ' ' и добавления '+'. Удаления '-' не дают new_line.
+     * Учитываем только строки контекста '' и добавления '+'. Удаления '-' не дают new_line.
      * <p>
      * Sonar fixes:
      * - снижена когнитивная сложность (разбито на маленькие методы)
@@ -241,21 +347,44 @@ public class InlineCommentPlannerService {
         return newLines;
     }
 
+    /**
+     * Парсит начальный номер новой строки из hunk header (@@ ... +123,5 @@)
+     *
+     * @param line - строка для парсинга
+     * @return номер начала новой строки или null если не hunk header
+     */
     private static Integer parseHunkNewStart(String line) {
         Matcher m = HUNK_PATTERN.matcher(line);
         if (!m.matches()) return null;
         return Integer.parseInt(m.group(3));
     }
 
+    /**
+     * Проверяет находимся ли в hunk (currentNewLine > 0)
+     */
     private static boolean isInHunk(int currentNewLine) {
         return currentNewLine > 0;
     }
 
+    /**
+     * Проверяет, является ли строка file header (+++ или ---)
+     */
     private static boolean isDiffFileHeader(String line) {
         return line.startsWith("+++ ")
                 || line.startsWith("--- ");
     }
 
+    /**
+     * Обрабатывает одну строку diff и обновляет set валидных строк
+     * <p>
+     * Context ' ' и addition '+' -> добавляет в newLines и инкрементирует currentNewLine.
+     * Deletion '-' -> не добавляет, не инкрементирует.
+     *
+     * @param line           - строка diff
+     * @param currentNewLine - текущий номер новой строки
+     * @param newLines       - set для добавления валидных номеров
+     * @return обновленный currentNewLine
+     */
     private static int processDiffLine(String line, int currentNewLine, Set<Integer> newLines) {
         if (line.startsWith(" ") || line.startsWith("+")) {
             newLines.add(currentNewLine);
@@ -265,6 +394,16 @@ public class InlineCommentPlannerService {
         return currentNewLine;
     }
 
+    /**
+     * Корректирует номер строки если он невалиден (мягкий fallback +/- 2)
+     * <p>
+     * Если proposed валиден - возвращает его.
+     * Иначе пытается найти ближайший валидный в диапазоне +/- 2.
+     *
+     * @param proposed - номер строки из suggestion
+     * @param valid    - Set валидных номеров строк
+     * @return скорректированный номер или null если не нашли валидный
+     */
     private static Integer fixLineNumber(Integer proposed, Set<Integer> valid) {
         if (proposed == null || proposed <= 0) return null;
         if (valid.contains(proposed)) return proposed;
@@ -277,6 +416,14 @@ public class InlineCommentPlannerService {
         return null;
     }
 
+    /**
+     * Форматирует body inline комментария в Markdown
+     * Обрезает до maxChars если превышен лимит.
+     *
+     * @param s        - CodeSuggestion
+     * @param maxChars - максимум символов (например, 1200)
+     * @return отформатированный Markdown текст
+     */
     private static String formatInlineBody(CodeSuggestion s, int maxChars) {
         String sev = s.getSeverity() == null ? "INFO" : s.getSeverity().name();
         String icon = switch (sev) {
@@ -301,5 +448,39 @@ public class InlineCommentPlannerService {
             res = res.substring(0, Math.max(0, maxChars - 1)) + "…";
         }
         return res;
+    }
+
+    /**
+     * DTO для inline комментария
+     *
+     * @param oldPath - путь файла в базовой ветке (может быть null для новых файлов)
+     * @param newPath - путь файла в текущей ветке
+     * @param newLine - номер строки в новой версии файла
+     * @param body    - текст комментария в Markdown
+     */
+    public record InlineComment(String oldPath, String newPath, Integer newLine, String body) {
+    }
+
+    /**
+     * DTO для лимитов inline комментариев
+     *
+     * @param maxTotal   - максимум inline комментариев всего (например, 10)
+     * @param maxPerFile - максимум inline комментариев на файл (например, 3)
+     * @param maxChars   - максимум символов в одном комментарии (например, 1200)
+     */
+    private record Limits(int maxTotal, int maxPerFile, int maxChars) {
+
+        static Limits from(CodeReviewProperties props) {
+            int maxTotal = Optional.ofNullable(props.getMaxInlineComments()).orElse(10);
+            int maxPerFile = Optional.ofNullable(props.getMaxInlineCommentsPerFile()).orElse(3);
+            int maxChars = Optional.ofNullable(props.getMaxInlineCommentChars()).orElse(1200);
+            return new Limits(maxTotal, maxPerFile, maxChars);
+        }
+    }
+
+    /**
+     * Контекст для передачи в методы выбора (иммутабельный)
+     */
+    private record PickContext(Map<String, MergeRequestDiff> diffByPath, SelectionState state, Limits limits) {
     }
 }
