@@ -7,10 +7,12 @@ import com.groviate.telegramcodereviewbot.service.CodeReviewService;
 import com.groviate.telegramcodereviewbot.service.InlineCommentPlannerService;
 import com.groviate.telegramcodereviewbot.service.ReviewOrchestrator;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Profile;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
 
+@Profile("local") //для тестов в проде, чтобы избежать прямого доступа
 @RestController
 @Slf4j
 @RequestMapping("/api/test/review")

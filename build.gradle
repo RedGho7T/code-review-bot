@@ -2,6 +2,7 @@ plugins {
     id 'java'
     id 'org.springframework.boot' version '3.4.13'
     id 'io.spring.dependency-management' version '1.1.7'
+    id 'jacoco'
 }
 
 group = 'com.groviate'
@@ -17,6 +18,11 @@ ext {
     springAiVersion = '1.1.0'
     okhttpVersion = '4.12.0'
     logstashVersion = '7.4'
+    jacocoVersion = '0.8.12'
+}
+
+jacoco {
+    toolVersion = jacocoVersion
 }
 
 repositories {
@@ -40,11 +46,12 @@ dependencies {
     // DB & migrations
     runtimeOnly 'org.postgresql:postgresql'
     implementation 'org.flywaydb:flyway-core'
-    testRuntimeOnly "com.h2database:h2"
-    testImplementation("com.h2database:h2")
     runtimeOnly 'org.flywaydb:flyway-database-postgresql'
 
-    //  Spring AI
+    // H2 для тестов
+    testImplementation 'com.h2database:h2'
+
+    // Spring AI
     implementation 'org.springframework.ai:spring-ai-starter-model-openai'
 
     // HTTP / integration
@@ -57,7 +64,7 @@ dependencies {
     compileOnly 'org.projectlombok:lombok'
     annotationProcessor 'org.projectlombok:lombok'
 
-    //Config metadata (для подсказок в application.yml)
+    // Config metadata (для подсказок в application.yml)
     annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
 
     // Dev
@@ -66,9 +73,85 @@ dependencies {
     // Tests
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testImplementation "com.squareup.okhttp3:mockwebserver:${okhttpVersion}"
-
 }
 
-tasks.named('test') {
+def halfCores = (Runtime.runtime.availableProcessors().intdiv(2) ?: 1)
+
+tasks.withType(Test).configureEach {
     useJUnitPlatform()
+
+    systemProperty 'spring.profiles.active', 'test'
+
+    // Токен можно переопределить из реального окружения, локально будет "test-token"
+    environment 'GITLAB_API_TOKEN', (System.getenv('GITLAB_API_TOKEN') ?: 'test-token')
+
+    testLogging {
+        events "passed", "skipped", "failed"
+        exceptionFormat = 'full'
+    }
+}
+
+test {
+    maxParallelForks = halfCores
+    finalizedBy jacocoTestReport
+}
+
+// Модульные тесты: src/test/java/**/unit/**
+tasks.register('unitTest', Test) {
+    description = 'Runs unit tests from the unit folder.'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    include '**/unit/**'
+    maxParallelForks = halfCores
+    shouldRunAfter test
+    finalizedBy jacocoUnitTestReport
+
+    jacoco {
+        destinationFile = layout.buildDirectory.file("jacoco/unitTest.exec").get().asFile
+    }
+}
+
+// Интеграционные тесты: src/test/java/**/integration/** + *ApplicationTests*
+tasks.register('integrationTest', Test) {
+    description = 'Runs integration tests from the integration folder.'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    include '**/integration/**', '**/*ApplicationTests*'
+    maxParallelForks = 1
+    shouldRunAfter test
+    finalizedBy jacocoIntegrationTestReport
+
+    jacoco {
+        destinationFile = layout.buildDirectory.file("jacoco/integrationTest.exec").get().asFile
+    }
+}
+
+tasks.register('jacocoUnitTestReport', JacocoReport) {
+    dependsOn unitTest
+    reports {
+        xml.required = true
+        html.required = true
+        html.outputLocation = layout.buildDirectory.dir('reports/jacoco/jacocoUnitTestReport')
+    }
+
+    executionData.from(layout.buildDirectory.file("jacoco/unitTest.exec"))
+
+    sourceDirectories.setFrom files(sourceSets.main.allSource.srcDirs)
+    classDirectories.setFrom files(sourceSets.main.output.classesDirs)
+}
+
+tasks.register('jacocoIntegrationTestReport', JacocoReport) {
+    dependsOn integrationTest
+    reports {
+        xml.required = true
+        html.required = true
+        html.outputLocation = layout.buildDirectory.dir('reports/jacoco/jacocoIntegrationTestReport')
+    }
+
+    executionData.from(layout.buildDirectory.file("jacoco/integrationTest.exec"))
+
+    sourceDirectories.setFrom files(sourceSets.main.allSource.srcDirs)
+    classDirectories.setFrom files(sourceSets.main.output.classesDirs)
 }
