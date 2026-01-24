@@ -345,7 +345,6 @@ public class GitLabMergeRequestClient {
                 }
             }
 
-            // fallback: пробуем diff_refs из MR (но помним, что может быть пусто у новых MR)
             MergeRequest mr = getMergeRequest(projectId, mergeRequestId);
             if (mr != null && mr.getDiffRefs() != null) {
                 return mr.getDiffRefs();
@@ -354,7 +353,8 @@ public class GitLabMergeRequestClient {
             throw new GitlabClientException("Не удалось получить diff refs (versions пуст / diff_refs пуст)", null);
 
         } catch (Exception e) {
-            throw new GitlabClientException("Ошибка при получении MR versions/diff refs: " + e.getMessage(), e);
+            log.error("Ошибка получения MR: {}", e.getMessage());
+            throw new GitlabClientException("Ошибка при поиске MR", e);
         }
     }
 }

@@ -87,8 +87,8 @@ public class RagContextService {
             return formatContextForPrompt(relevantDocs);
 
         } catch (Exception e) {
-            log.error("Ошибка при получении RAG контекста", e);
-            throw new RagContextException("Failed to build RAG context", e);
+            log.debug("Ошибка при получении RAG контекста", e);
+            throw new RagContextException("Failed to build RAG context: " + safeMsg(e), e);
         }
     }
 
@@ -115,13 +115,13 @@ public class RagContextService {
 
         try (Response response = httpClient.newCall(request).execute()) {
             if (!response.isSuccessful()) {
-                log.error("Ошибка при поиске в ChromaDB: {}", response.code());
+                log.warn("Ошибка при поиске в ChromaDB: httpCode={}", response.code());
                 return List.of();
             }
 
             ResponseBody body = response.body();
             if (body == null) {
-                log.error("ChromaDB вернул пустой body при query()");
+                log.warn("ChromaDB вернул пустой пустой ответ");
                 return List.of();
             }
 
@@ -386,6 +386,13 @@ public class RagContextService {
         long intPart = scaled / 100;
         long frac = Math.abs(scaled % 100);
         return intPart + "." + (frac < 10 ? "0" : "") + frac;
+    }
+
+    private static String safeMsg(Throwable t) {
+        if (t == null) return "unknown";
+        String m = t.getMessage();
+        if (m == null) return t.getClass().getSimpleName();
+        return (m.length() > 200) ? m.substring(0, 200) : m;
     }
 
     /**

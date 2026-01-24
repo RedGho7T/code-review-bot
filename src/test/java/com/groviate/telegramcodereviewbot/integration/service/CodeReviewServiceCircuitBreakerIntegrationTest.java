@@ -11,6 +11,7 @@ import com.groviate.telegramcodereviewbot.service.AiChatGateway;
 import com.groviate.telegramcodereviewbot.service.CodeReviewService;
 import com.groviate.telegramcodereviewbot.service.MergeRequestRagContextProvider;
 import com.groviate.telegramcodereviewbot.service.PromptTemplateService;
+import com.groviate.telegramcodereviewbot.service.ReviewMetricsService;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import org.junit.jupiter.api.BeforeEach;
@@ -72,6 +73,9 @@ class CodeReviewServiceCircuitBreakerIntegrationTest {
     MergeRequestRagContextProvider ragContextProvider;
     @MockitoBean
     AiChatGateway aiChatGateway;
+
+    @MockitoBean
+    ReviewMetricsService metrics;
 
     @Autowired
     CodeReviewService codeReviewService;

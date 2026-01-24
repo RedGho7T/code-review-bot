@@ -84,7 +84,7 @@ public class PromptTemplateService {
         if (!props.isRagEnabled()) {
             ragContext = "";
         } else if (ragContext == null || ragContext.isBlank()) {
-            log.warn("RAG включен, но контекст не найден");
+            log.debug("RAG включен, но контекст не найден");
             ragContext = "Стандарты не найдены";
         }
 

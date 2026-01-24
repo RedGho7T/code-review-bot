@@ -107,6 +107,7 @@ logging:
     org.hibernate: INFO
     org.springframework.boot.autoconfigure.jdbc: DEBUG
     org.springframework.orm.jpa: DEBUG
+    org.springframework.ai.retry.autoconfigure: ERROR
 
 # Настройки Spring Boot Actuator: какие endpoints доступны, health-детали и т.п.
 management:

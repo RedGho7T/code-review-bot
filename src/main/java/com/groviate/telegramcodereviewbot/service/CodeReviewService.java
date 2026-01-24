@@ -36,6 +36,7 @@ public class CodeReviewService {
     private final CodeReviewProperties codeReviewProperties;
     private final MergeRequestRagContextProvider ragContextProvider;
     private final AiChatGateway aiChatGateway;
+    private final ReviewMetricsService metrics;
 
     private static final String EMPTY_METADATA = "files=0, added=0, removed=0, diffChars=0";
 
@@ -43,12 +44,14 @@ public class CodeReviewService {
                              ObjectMapper objectMapper,
                              CodeReviewProperties codeReviewProperties,
                              MergeRequestRagContextProvider ragContextProvider,
-                             AiChatGateway aiChatGateway) {
+                             AiChatGateway aiChatGateway,
+                             ReviewMetricsService metrics) {
         this.promptTemplateService = promptTemplateService;
         this.objectMapper = objectMapper;
         this.codeReviewProperties = codeReviewProperties;
         this.ragContextProvider = ragContextProvider;
         this.aiChatGateway = aiChatGateway;
+        this.metrics = metrics;
         this.objectMapper.configure(DeserializationFeature.READ_UNKNOWN_ENUM_VALUES_USING_DEFAULT_VALUE, true);
         this.objectMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
     }
@@ -72,11 +75,30 @@ public class CodeReviewService {
         String description = mergeRequest != null ? mergeRequest.getDescription() : "Нет описания";
 
         String ragContext = "";
-        if (codeReviewProperties.isRagEnabled()) {
+
+        if (!codeReviewProperties.isRagEnabled()) {
+            // RAG выключен конфигом => это не ошибка, считаем как skipped
+            metrics.markRagSkipped(null);
+        } else {
+            io.micrometer.core.instrument.Timer.Sample ragSample = metrics.startRag();
             try {
                 ragContext = ragContextProvider.buildRagContext(diffs);
+
+                if (ragContext == null || ragContext.isBlank()) {
+                    metrics.markRagEmpty(ragSample);
+                    log.debug("RAG включен, но контекст пустой (нет релевантных документов)");
+                    ragContext = "";
+                } else {
+                    metrics.markRagSuccess(ragSample);
+                }
+
             } catch (Exception e) {
-                log.warn("RAG контекст недоступен, продолжаю без него", e);
+                metrics.markRagFailed(ragSample);
+
+                log.warn("RAG контекст недоступен, продолжаю без него. cause={}", safeMsg(e));
+                log.debug("RAG failure details", e);
+
+                ragContext = "";
             }
         }
 

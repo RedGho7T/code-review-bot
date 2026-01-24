@@ -9,6 +9,7 @@ import com.groviate.telegramcodereviewbot.service.AiChatGateway;
 import com.groviate.telegramcodereviewbot.service.CodeReviewService;
 import com.groviate.telegramcodereviewbot.service.MergeRequestRagContextProvider;
 import com.groviate.telegramcodereviewbot.service.PromptTemplateService;
+import com.groviate.telegramcodereviewbot.service.ReviewMetricsService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -16,6 +17,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.util.List;
 
@@ -39,6 +41,8 @@ class CodeReviewServiceUnitTest {
     MergeRequestRagContextProvider ragContextProvider;
     @Mock
     AiChatGateway aiChatGateway;
+    @Mock
+    ReviewMetricsService metrics;
 
     private CodeReviewService service;
 
@@ -49,7 +53,8 @@ class CodeReviewServiceUnitTest {
                 new ObjectMapper(),
                 props,
                 ragContextProvider,
-                aiChatGateway
+                aiChatGateway,
+                metrics
         );
     }
 
