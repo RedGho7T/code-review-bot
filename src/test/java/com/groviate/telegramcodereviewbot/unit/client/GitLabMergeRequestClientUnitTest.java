@@ -15,6 +15,20 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.client.RestTemplate;
 
+import com.groviate.telegramcodereviewbot.model.MergeRequestDiffRefs;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.client.MockRestServiceServer;
+
+import static org.hamcrest.Matchers.allOf;
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.not;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.content;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
+
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -374,4 +388,123 @@ class GitLabMergeRequestClientUnitTest {
                     .isEmpty();
         }
     }
+
+    @Nested
+    @DisplayName("Тесты для метода postLineComment() — регрессия на line_code/позицию")
+    class PostLineCommentTests {
+
+        @Test
+        @DisplayName("Должен отправлять old_line и new_line если оба известны (контекстная строка)")
+        void givenOldAndNewLineWhenPostLineCommentThenSendsBothLines() {
+            RestTemplate rt = new RestTemplate();
+            MockRestServiceServer server = MockRestServiceServer.bindTo(rt).build();
+
+            GitLabMergeRequestClient realClient = new GitLabMergeRequestClient(rt, gitlabUrl);
+
+            MergeRequestDiffRefs refs = MergeRequestDiffRefs.builder()
+                    .baseSha("base")
+                    .startSha("start")
+                    .headSha("head")
+                    .build();
+
+            var pos = new GitLabMergeRequestClient.LinePosition(
+                    "README.md",
+                    "README.md",
+                    10,
+                    10
+            );
+
+            server.expect(requestTo(gitlabUrl +
+                            "/projects/" + projectId + "/merge_requests/" + mergeRequestId + "/discussions"))
+                    .andExpect(method(HttpMethod.POST))
+                    .andExpect(content().string(allOf(
+                            containsString("position%5Bbase_sha%5D=base"),
+                            containsString("position%5Bstart_sha%5D=start"),
+                            containsString("position%5Bhead_sha%5D=head"),
+                            containsString("position%5Bposition_type%5D=text"),
+                            containsString("position%5Bold_path%5D=README.md"),
+                            containsString("position%5Bnew_path%5D=README.md"),
+                            containsString("position%5Bold_line%5D=10"),
+                            containsString("position%5Bnew_line%5D=10"),
+                            containsString("body=")
+                    )))
+                    .andRespond(withStatus(HttpStatus.CREATED)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .body("{\"ok\":true}"));
+
+            realClient.postLineComment(projectId, mergeRequestId, refs, pos, "hello");
+
+            server.verify();
+        }
+
+        @Test
+        @DisplayName("Должен отправлять только new_line если old_line неизвестен (добавленная строка)")
+        void givenOnlyNewLine_whenPostLineComment_thenSendsOnlyNewLine() {
+            RestTemplate rt = new RestTemplate();
+            MockRestServiceServer server = MockRestServiceServer.bindTo(rt).build();
+
+            GitLabMergeRequestClient realClient = new GitLabMergeRequestClient(rt, gitlabUrl);
+
+            MergeRequestDiffRefs refs = MergeRequestDiffRefs.builder()
+                    .baseSha("base")
+                    .startSha("start")
+                    .headSha("head")
+                    .build();
+
+            var pos = new GitLabMergeRequestClient.LinePosition(
+                    "README.md",
+                    "README.md",
+                    null,
+                    25
+            );
+
+            server.expect(requestTo(gitlabUrl +
+                            "/projects/" + projectId + "/merge_requests/" + mergeRequestId + "/discussions"))
+                    .andExpect(method(HttpMethod.POST))
+                    .andExpect(content().string(allOf(
+                            containsString("position%5Bnew_line%5D=25"),
+                            not(containsString("position%5Bold_line%5D="))
+                    )))
+                    .andRespond(withStatus(HttpStatus.CREATED)
+                            .contentType(MediaType.APPLICATION_JSON).body("{\"ok\":true}"));
+
+            realClient.postLineComment(projectId, mergeRequestId, refs, pos, "inline");
+
+            server.verify();
+        }
+
+        @Test
+        @DisplayName("Должен бросать GitlabClientException если old_line и new_line оба невалидны")
+        void givenNoValidLinesWhenPostLineCommentThenThrows() {
+            RestTemplate rt = new RestTemplate();
+            MockRestServiceServer server = MockRestServiceServer.bindTo(rt).build();
+
+            GitLabMergeRequestClient realClient = new GitLabMergeRequestClient(rt, gitlabUrl);
+
+            MergeRequestDiffRefs refs = MergeRequestDiffRefs.builder()
+                    .baseSha("base")
+                    .startSha("start")
+                    .headSha("head")
+                    .build();
+
+            var pos = new GitLabMergeRequestClient.LinePosition(
+                    "README.md",
+                    "README.md",
+                    null,
+                    null
+            );
+
+            assertThatThrownBy(() -> realClient.postLineComment(
+                    projectId,
+                    mergeRequestId,
+                    refs,
+                    pos,
+                    "x"))
+                    .isInstanceOf(GitlabClientException.class)
+                    .hasMessageContaining("Both oldLine and newLine are invalid");
+
+            server.verify();
+        }
+    }
+
 }
