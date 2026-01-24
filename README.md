@@ -9,30 +9,56 @@ Spring Boot приложение, которое автоматически де
 - **Автоматический запуск ревью** по GitLab Webhook на события Merge Request.
 - **Асинхронная обработка** MR в отдельном пуле потоков (webhook отвечает быстро).
 - **Публикация результата в GitLab**:
-  - общий Markdown-комментарий,
-  - (опционально) inline-комментарии к конкретным строкам diff.
+    - общий Markdown-комментарий,
+    - (опционально) inline-комментарии к конкретным строкам diff.
 - **RAG (опционально)**: подтягивание релевантных стандартов кодирования через ChromaDB.
 - **Хранение статуса ревью в Postgres** (`mr_review_status`) — дедупликация по `head_sha`, защита от повторов.
+
+### Фаза 6: готовность к продакшену (надёжность / мониторинг / тестирование)
+
+- **Кастомные доменные исключения** (единый формат ошибок и “машинные” коды):
+    - `CodeReviewBotException` (base)
+    - `AiReviewException` (ошибки OpenAI / временные сбои)
+    - `AiNonRetryableException` (ошибки запроса, которые не надо ретраить и не должны “ломать” circuit breaker)
+    - `GitlabClientException` (ошибки GitLab API)
+    - `RagContextException` (ошибки получения RAG контекста)
+    - `WebhookValidationException` (ошибки валидации webhook)
+    - `ReviewProcessingException` (ошибки процесса/очереди/оркестрации)
+- **Resilience4j**:
+    - `@Retry` для OpenAI (3 попытки)
+    - `@Retry` для GitLab (2 попытки)
+    - `@CircuitBreaker` для OpenAI (на уровне `CodeReviewService`)
+    - “ignore-exceptions” для circuit breaker (например, `AiNonRetryableException`)
+- **Единые метрики** через Micrometer + Actuator:
+    - `code_review_total{result=success|failed|skipped}`
+    - `code_review_duration_seconds{result=...}` (Timer → в Prometheus добавляется `_seconds`)
+    - `rag_context_total{result=success|failed|skipped|empty}`
+    - `rag_context_duration_seconds{result=...}`
+    - плюс стандартные `resilience4j_*` метрики (retry/circuitbreaker)
+- **Health indicator**:
+    - `CodeReviewHealthIndicator` помечает сервис как `DOWN`, если `openai` circuit breaker в состоянии `OPEN`
+- **Prometheus endpoint включён**: `/actuator/prometheus`
+- **Глобальный обработчик ошибок API**: `CodeReviewExceptionHandler` возвращает единый JSON (timestamp/path/error/message)
 
 ---
 
 ## Как работает (High-level)
 
 1. **GitLab** отправляет webhook на:
-   - `POST /api/webhook/gitlab/merge-request`
+    - `POST /api/webhook/gitlab/merge-request`
 2. Контроллер валидирует `X-Gitlab-Token`, проверяет событие и `action` (open/reopen/update), извлекает `projectId` и `mrIid`, отправляет ревью в очередь.
 3. `ReviewOrchestrator`:
-   - получает MR и diffs через GitLab API,
-   - пропускает Draft/WIP и не-opened MR,
-   - фиксирует статус в БД (RUNNING) и блокирует дубль по `head_sha`,
-   - запускает `CodeReviewService`,
-   - публикует результат через `GitLabCommentService`,
-   - обновляет статус (SUCCESS/FAILED).
-4. `CodeReviewService`:
-   - (опционально) собирает `{rag_context}` через RAG,
-   - формирует промпт из шаблонов (`system-prompt.txt`, `user-prompt.txt`),
-   - вызывает OpenAI через Spring AI `ChatClient`,
-   - парсит JSON в `CodeReviewResult`.
+    - получает MR и diffs через GitLab API (**GitLab обёрнут в `@Retry(name="gitlab")`**),
+    - пропускает Draft/WIP и не-opened MR,
+    - фиксирует статус в БД (RUNNING) и блокирует дубль по `head_sha`,
+    - запускает `CodeReviewService`,
+    - публикует результат через `GitLabCommentService`,
+    - обновляет статус (SUCCESS/FAILED).
+4. `CodeReviewService` (**обёрнут в `@CircuitBreaker(name="openai")`**):
+    - собирает `{rag_context}` (если включено). Ошибки RAG **не валят** ревью, а метятся метриками как `failed/empty/skipped`.
+    - формирует промпт из шаблонов (`system-prompt.txt`, `user-prompt.txt`),
+    - вызывает OpenAI через `AiChatGateway` (обычно `OpenAiChatGateway`) — там стоит **`@Retry(name="openai")`**,
+    - парсит JSON в `CodeReviewResult`.
 5. `GitLabCommentService` публикует общий комментарий и (опционально) inline обсуждения.
 
 ---
@@ -44,24 +70,127 @@ Spring Boot приложение, которое автоматически де
 - **`ReviewOrchestrator`** — оркестрация всего пайплайна MR → diffs → AI → GitLab.
 
 ### GitLab API
-- **`GitLabMergeRequestClient`** — получение MR/changes/diff refs, публикация comments/discussions.
+- **`GitLabMergeRequestClient`** — получение MR/changes/diff refs, публикация comments/discussions.  
+  Ключевые методы обёрнуты в **`@Retry(name="gitlab")`**, ошибки поднимаются как `GitlabClientException`.
 
 ### AI Review
 - **`AiChatConfig`** — создание `ChatClient` (Spring AI).
-- **`CodeReviewService`** — сборка промпта, вызов модели, парсинг результата.
+- **`AiChatGateway` / `OpenAiChatGateway`** — шлюз к OpenAI (Retry + классификация ошибок).
+- **`CodeReviewService`** — сборка промпта, вызов модели, парсинг результата. Обёрнут в **CircuitBreaker**.
 - **`PromptTemplateService`** — подстановка `{title}`, `{description}`, `{rag_context}`, `{code_changes}` в шаблоны.
 
 ### RAG (ChromaDB)
 - **`DocumentIndexingService`** — индексирует документы из `resources/rag-documents/` при старте.
 - **`RagContextService`** — embedding + query в ChromaDB + сборка контекста с лимитами.
+- **`MergeRequestRagContextProvider`** — собирает итоговый RAG контекст (Full/Economy стратегия).
 
 ### Публикация и форматирование
 - **`CommentFormatterService`** — Markdown формат ответа.
 - **`InlineCommentPlannerService`** — планирование inline-comment’ов по лимитам.
+- **`GitLabCommentService`** — публикация общего комментария + inline.
 
-### Асинхронность и надежность
+### Асинхронность / надёжность / мониторинг
 - **`AsyncConfig`** — пул `reviewExecutor`.
+- **`ReviewMetricsService`** — счётчики и таймеры ревью + RAG.
+- **`CodeReviewHealthIndicator`** — health по состоянию openai circuit breaker.
+- **`CodeReviewExceptionHandler`** — единый JSON-ответ для доменных ошибок контроллеров.
 - **`ReviewStatus` (+ repository)** — хранение статуса в Postgres.
+
+---
+
+## Resilience4j: Retry / CircuitBreaker (конфигурация)
+
+В `application.yml` задаются параметры:
+
+```yaml
+resilience4j:
+  retry:
+    instances:
+      openai:
+        max-attempts: 3
+        wait-duration: 500ms
+      gitlab:
+        max-attempts: 2
+        wait-duration: 300ms
+  circuitbreaker:
+    instances:
+      openai:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 20
+        minimum-number-of-calls: 10
+        failure-rate-threshold: 50
+        permitted-number-of-calls-in-half-open-state: 5
+        wait-duration-in-open-state: 30s
+        ignore-exceptions:
+          - com.groviate.telegramcodereviewbot.exception.AiNonRetryableException
+```
+
+> Важно: если используется Spring AI retry автоконфигурация — обычно её лучше “заглушить” (например, `spring.ai.retry.max-attempts=1`), чтобы **не получить двойной retry** (Spring Retry + Resilience4j одновременно).
+
+---
+
+## Метрики / мониторинг (Prometheus)
+
+Actuator endpoints включены (см. `management.endpoints.web.exposure.include`).
+
+### Полезные endpoints
+
+> ⚠️ Если у тебя задан `SERVER_SERVLET_CONTEXT_PATH=/telegram-bot`, то префикс добавится ко всем URL:  
+> например `/telegram-bot/actuator/prometheus`
+
+- `GET /actuator/health` — здоровье приложения (включая `codeReview`)
+- `GET /actuator/prometheus` — метрики Prometheus
+- `GET /actuator/metrics` — список метрик
+- `GET /actuator/circuitbreakers` и `/actuator/circuitbreakerevents`
+- `GET /actuator/retries` и `/actuator/retryevents`
+
+### Кастомные метрики (твои)
+
+**Code review:**
+- `code_review_total{result="success|failed|skipped"}`
+- `code_review_duration_seconds{result="success|failed|skipped"}`
+
+**RAG:**
+- `rag_context_total{result="success|failed|skipped|empty"}`
+- `rag_context_duration_seconds{result="success|failed|skipped|empty"}`
+
+### Метрики Resilience4j (автоматические)
+- `resilience4j_retry_calls_total{kind=... , name=openai|gitlab}`
+- `resilience4j_circuitbreaker_state{name="openai", state="closed|open|half_open"...}`
+- и другие `resilience4j_*`
+
+---
+
+## Health Indicator
+
+`CodeReviewHealthIndicator` проверяет состояние circuit breaker `openai`:
+- если `OPEN` → `Health.down()`
+- иначе → `Health.up()`
+
+Смотри в `GET /actuator/health` (детали включены: `show-details: always`).
+
+---
+
+## Тестирование
+
+### Unit tests
+Запуск:
+```bash
+./gradlew test
+```
+
+Ожидаемые основные unit-наборы:
+- `CodeReviewService` (парсинг, fallback, поведение при пустом ответе, обработка RAG empty/failed)
+- `CommentFormatterService` (форматирование markdown, лимиты, устойчивость к null)
+
+### Integration tests
+Запуск (если у тебя выделен отдельный sourceSet):
+```bash
+./gradlew integrationTest
+```
+
+Типичный интеграционный сценарий:
+- webhook → controller → orchestrator → client mocks/stubs → проверка статуса/ответа/метрик
 
 ---
 
@@ -70,11 +199,11 @@ Spring Boot приложение, которое автоматически де
 ### Зачем два режима
 - **FULL**: RAG строится *для каждого файла* — “полнее”, но дороже и часто раздувает `{rag_context}`.
 - **ECONOMY**: дешевле:
-  - 1 общий RAG по всему MR (сводка diffs),
-  - + отдельный RAG только для **top-N** самых больших файлов,
-  - жёсткие лимиты на размер и дедупликация повторов.
+    - 1 общий RAG по всему MR (сводка diffs),
+    - + отдельный RAG только для **top-N** самых больших файлов,
+    - жёсткие лимиты на размер и дедупликация повторов.
 
-
+---
 
 # Инструкция по запуску проекта
 
@@ -298,6 +427,18 @@ docker compose --profile prod config
 docker compose --profile prod down -v
 docker compose --profile prod up -d --build
 ```
+
+### 5.4. Проверить метрики / Prometheus
+
+```bash
+curl -s http://localhost:8080/actuator/prometheus | head -n 50
+```
+
+Ищи:
+- `code_review_total`
+- `rag_context_total`
+- `resilience4j_retry_calls_total`
+- `resilience4j_circuitbreaker_state`
 
 ---
 
