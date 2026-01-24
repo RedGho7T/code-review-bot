@@ -114,12 +114,18 @@ public class ReviewRagTestController {
 
         for (var c : planned) {
             try {
-                gitLabMergeRequestClient.postLineComment(
-                        projectId, mrId,
-                        refs,
+                var position = new GitLabMergeRequestClient.LinePosition(
                         c.oldPath(),
                         c.newPath(),
-                        c.newLine(),
+                        c.oldLine(),
+                        c.newLine()
+                );
+
+                gitLabMergeRequestClient.postLineComment(
+                        projectId,
+                        mrId,
+                        refs,
+                        position,
                         c.body()
                 );
                 ok++;

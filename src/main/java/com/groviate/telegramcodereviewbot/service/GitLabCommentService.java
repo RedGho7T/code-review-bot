@@ -80,44 +80,36 @@ public class GitLabCommentService {
         }
     }
 
-    /**
-     * Публикует комментарий к конкретной строке кода (встроенный комментарий)
-     * <p>
-     *
-     * @param projectId      - ID проекта в GitLab
-     * @param mergeRequestId - ID Merge Request
-     * @param lineNumber     - номер строки в файле где нужно оставить комментарий
-     * @param commentText    - текст комментария (уже отформатированный в Markdown)
-     * @throws GitlabClientException - если произойдёт ошибка
-     */
     public void publishLineComment(Integer projectId,
                                    Integer mergeRequestId,
                                    MergeRequestDiffRefs refs,
-                                   String oldPath,
-                                   String newPath,
-                                   Integer lineNumber,
-                                   String commentText) {
-        log.info("Публикуем inline-комментарий на строке {} в MR {}/{} ({})",
-                lineNumber, projectId, mergeRequestId, newPath);
+                                   InlineCommentPlannerService.InlineComment comment) {
+
+        log.info("Публикуем inline-комментарий в MR {}/{} ({}), oldLine={}, newLine={}",
+                projectId, mergeRequestId, comment.newPath(), comment.oldLine(), comment.newLine());
 
         if (codeReviewProperties.isDryRun()) {
-            log.warn("DRY-RUN: inline не будет опубликован. {}", commentText);
+            log.warn("DRY-RUN: inline не будет опубликован. {}", comment.body());
             return;
         }
 
-        try {
-            gitLabMergeRequestClient.postLineComment(
-                    projectId, mergeRequestId,
-                    refs, oldPath, newPath,
-                    lineNumber, commentText
-            );
-            log.info("Встроенный комментарий успешно опубликован на строке {} в MR {}/{}", lineNumber,
-                    projectId, mergeRequestId);
-        } catch (GitlabClientException e) {
-            log.error("Ошибка при пубилкации встроенного комментария: {}", e.getMessage());
+        var position = new GitLabMergeRequestClient.LinePosition(
+                comment.oldPath(),
+                comment.newPath(),
+                comment.oldLine(),
+                comment.newLine()
+        );
 
-            throw e;
-        }
+        gitLabMergeRequestClient.postLineComment(
+                projectId,
+                mergeRequestId,
+                refs,
+                position,
+                comment.body()
+        );
+
+        log.info("Inline-комментарий опубликован в MR {}/{} ({}), oldLine={}, newLine={}",
+                projectId, mergeRequestId, comment.newPath(), comment.oldLine(), comment.newLine());
     }
 
     /**
@@ -185,15 +177,9 @@ public class GitLabCommentService {
 
         for (InlineCommentPlannerService.InlineComment c : planned) {
             try {
-                publishLineComment(projectId, mergeRequestId,
-                        refs,
-                        c.oldPath(),
-                        c.newPath(),
-                        c.newLine(),
-                        c.body());
+                publishLineComment(projectId, mergeRequestId, refs, c);
                 success++;
             } catch (Exception e) {
-                // важно: не валим весь review из-за одного невалидного inline
                 log.warn("Inline comment failed for {}:{} - {}",
                         c.newPath(), c.newLine(), e.getMessage());
             }

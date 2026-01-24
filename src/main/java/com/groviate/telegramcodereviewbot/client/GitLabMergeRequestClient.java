@@ -263,6 +263,8 @@ public class GitLabMergeRequestClient {
         }
     }
 
+    public record LinePosition(String oldPath, String newPath, Integer oldLine, Integer newLine) { }
+
     /**
      * Публикует встроенный комментарий к строке кода
      */
@@ -270,22 +272,31 @@ public class GitLabMergeRequestClient {
     public void postLineComment(Integer projectId,
                                 Integer mergeRequestId,
                                 MergeRequestDiffRefs refs,
-                                String oldPath,
-                                String newPath,
-                                Integer newLine,
+                                LinePosition position,
                                 String commentText) {
 
         if (refs == null) {
             throw new GitlabClientException("diff refs is null (cannot post inline comment)", null);
         }
-        if (newPath == null || newPath.isBlank()) {
+        if (position == null) {
+            throw new GitlabClientException("position is null (cannot post inline comment)", null);
+        }
+        if (position.newPath() == null || position.newPath().isBlank()) {
             throw new GitlabClientException("newPath is blank (cannot post inline comment)", null);
         }
-        if (oldPath == null || oldPath.isBlank()) {
-            oldPath = newPath;
-        }
-        if (newLine == null || newLine <= 0) {
-            throw new GitlabClientException("newLine is invalid: " + newLine, null);
+
+        String oldPath = (position.oldPath() == null || position.oldPath().isBlank())
+                ? position.newPath()
+                : position.oldPath();
+
+        Integer oldLine = position.oldLine();
+        Integer newLine = position.newLine();
+
+        boolean hasOld = oldLine != null && oldLine > 0;
+        boolean hasNew = newLine != null && newLine > 0;
+
+        if (!hasOld && !hasNew) {
+            throw new GitlabClientException("Both oldLine and newLine are invalid (cannot post inline comment)", null);
         }
 
         String url = String.format("%s/projects/%d/merge_requests/%d/discussions",
@@ -301,8 +312,14 @@ public class GitLabMergeRequestClient {
             form.add("position[position_type]", "text");
 
             form.add("position[old_path]", oldPath);
-            form.add("position[new_path]", newPath);
-            form.add("position[new_line]", String.valueOf(newLine));
+            form.add("position[new_path]", position.newPath());
+
+            if (hasOld) {
+                form.add("position[old_line]", String.valueOf(oldLine));
+            }
+            if (hasNew) {
+                form.add("position[new_line]", String.valueOf(newLine));
+            }
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
@@ -312,7 +329,12 @@ public class GitLabMergeRequestClient {
             ResponseEntity<String> response = restTemplate.postForEntity(url, entity, String.class);
 
             if (!response.getStatusCode().is2xxSuccessful()) {
-                throw new GitlabClientException("Inline comment failed: " + response.getStatusCode(), null);
+                String body = response.getBody();
+                throw new GitlabClientException(
+                        "Inline comment failed: " + response.getStatusCode()
+                                + (body == null ? "" : (", body=" + body)),
+                        null
+                );
             }
 
         } catch (Exception e) {

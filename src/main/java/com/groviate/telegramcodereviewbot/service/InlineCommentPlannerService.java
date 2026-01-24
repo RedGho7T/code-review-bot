@@ -39,7 +39,7 @@ public class InlineCommentPlannerService {
         final List<InlineComment> selected = new ArrayList<>();
         final Set<String> dedupe = new HashSet<>();
         final Map<String, Integer> perFileCount = new HashMap<>();
-        final Map<String, Set<Integer>> validNewLinesByNewPath = new HashMap<>();
+        final Map<String, Map<Integer, Integer>> newToOldLineByNewPath = new HashMap<>();
     }
 
     /**
@@ -185,15 +185,20 @@ public class InlineCommentPlannerService {
             return Optional.empty();
         }
 
-        Set<Integer> validNewLines =
-                getOrComputeValidNewLines(newPath,
-                        diff.getDiff(),
-                        ctx.state.validNewLinesByNewPath);
-        Integer line = fixLineNumber(s.getLineNumber(), validNewLines);
-        if (line == null) return Optional.empty();
+        Map<Integer, Integer> newToOld =
+                getOrComputeNewToOldLineMapping(newPath, diff.getDiff(), ctx.state.newToOldLineByNewPath);
+
+        Set<Integer> validNewLines = newToOld.keySet();
+
+        Integer newLine = fixLineNumber(s.getLineNumber(), validNewLines);
+        if (newLine == null) return Optional.empty();
+
+        if (!newToOld.containsKey(newLine)) return Optional.empty();
+
+        Integer oldLine = newToOld.get(newLine);
 
         String categoryKey = (s.getCategory() == null) ? "NA" : s.getCategory().name();
-        String key = newPath + "#" + line + "#" + categoryKey;
+        String key = newPath + "#" + newLine + "#" + categoryKey;
 
         if (!ctx.state.dedupe.add(key)) {
             return Optional.empty();
@@ -202,7 +207,7 @@ public class InlineCommentPlannerService {
         String oldPath = resolveOldPath(diff, newPath);
         String body = formatInlineBody(s, ctx.limits.maxChars);
 
-        return Optional.of(new InlineComment(oldPath, newPath, line, body));
+        return Optional.of(new InlineComment(oldPath, newPath, oldLine, newLine, body));
     }
 
     /**
@@ -248,22 +253,15 @@ public class InlineCommentPlannerService {
         return perFileCount.getOrDefault(newPath, 0) >= maxPerFile;
     }
 
-    /**
-     * Получает или вычисляет множество валидных номеров строк для inline комментариев
-     * <p>
-     * Кеширует результат в cache для производительности.
-     *
-     * @param newPath  - путь файла
-     * @param diffText - текст diff
-     * @param cache    - кеш validNewLines
-     * @return Set валидных номеров строк (context ' ' и addition '+')
-     */
-    private static Set<Integer> getOrComputeValidNewLines(String newPath, String diffText,
-                                                          Map<String, Set<Integer>> cache) {
-        Set<Integer> cached = cache.get(newPath);
+    private static Map<Integer, Integer> getOrComputeNewToOldLineMapping(
+            String newPath,
+            String diffText,
+            Map<String, Map<Integer, Integer>> cache) {
+
+        Map<Integer, Integer> cached = cache.get(newPath);
         if (cached != null) return cached;
 
-        Set<Integer> computed = collectValidNewLines(diffText);
+        Map<Integer, Integer> computed = collectNewToOldLineMapping(diffText);
         cache.put(newPath, computed);
         return computed;
     }
@@ -321,52 +319,6 @@ public class InlineCommentPlannerService {
     }
 
     /**
-     * Собираем множество допустимых new_line, на которые можно оставить inline comment.
-     * Учитываем только строки контекста '' и добавления '+'. Удаления '-' не дают new_line.
-     * <p>
-     * Sonar fixes:
-     * - снижена когнитивная сложность (разбито на маленькие методы)
-     * - убраны continue/break (нет ни одного)
-     */
-    private static Set<Integer> collectValidNewLines(String diff) {
-        if (diff == null || diff.isBlank()) return Set.of();
-
-        Set<Integer> newLines = new HashSet<>();
-        int currentNewLine = -1;
-
-        String[] lines = diff.split("\n", -1);
-        for (String line : lines) {
-            Integer hunkStart = parseHunkNewStart(line);
-            if (hunkStart != null) {
-                currentNewLine = hunkStart;
-            } else if (isInHunk(currentNewLine) && !isDiffFileHeader(line)) {
-                currentNewLine = processDiffLine(line, currentNewLine, newLines);
-            }
-        }
-
-        return newLines;
-    }
-
-    /**
-     * Парсит начальный номер новой строки из hunk header (@@ ... +123,5 @@)
-     *
-     * @param line - строка для парсинга
-     * @return номер начала новой строки или null если не hunk header
-     */
-    private static Integer parseHunkNewStart(String line) {
-        Matcher m = HUNK_PATTERN.matcher(line);
-        if (!m.matches()) return null;
-        return Integer.parseInt(m.group(3));
-    }
-
-    /**
-     * Проверяет находимся ли в hunk (currentNewLine > 0)
-     */
-    private static boolean isInHunk(int currentNewLine) {
-        return currentNewLine > 0;
-    }
-
-    /**
      * Проверяет, является ли строка file header (+++ или ---)
      */
     private static boolean isDiffFileHeader(String line) {
@@ -374,25 +326,6 @@ public class InlineCommentPlannerService {
                 || line.startsWith("--- ");
     }
 
-    /**
-     * Обрабатывает одну строку diff и обновляет set валидных строк
-     * <p>
-     * Context ' ' и addition '+' -> добавляет в newLines и инкрементирует currentNewLine.
-     * Deletion '-' -> не добавляет, не инкрементирует.
-     *
-     * @param line           - строка diff
-     * @param currentNewLine - текущий номер новой строки
-     * @param newLines       - set для добавления валидных номеров
-     * @return обновленный currentNewLine
-     */
-    private static int processDiffLine(String line, int currentNewLine, Set<Integer> newLines) {
-        if (line.startsWith(" ") || line.startsWith("+")) {
-            newLines.add(currentNewLine);
-            return currentNewLine + 1;
-        }
-        // '-' или что-то нестандартное не двигают new_line
-        return currentNewLine;
-    }
 
     /**
      * Корректирует номер строки если он невалиден (мягкий fallback +/- 2)
@@ -458,8 +391,8 @@ public class InlineCommentPlannerService {
      * @param newLine - номер строки в новой версии файла
      * @param body    - текст комментария в Markdown
      */
-    public record InlineComment(String oldPath, String newPath, Integer newLine, String body) {
-    }
+    public record InlineComment(String oldPath, String newPath, Integer oldLine, Integer newLine, String body) { }
+
 
     /**
      * DTO для лимитов inline комментариев
@@ -476,6 +409,84 @@ public class InlineCommentPlannerService {
             int maxChars = Optional.ofNullable(props.getMaxInlineCommentChars()).orElse(1200);
             return new Limits(maxTotal, maxPerFile, maxChars);
         }
+    }
+
+    private static Map<Integer, Integer> collectNewToOldLineMapping(String diff) {
+        if (diff == null || diff.isBlank()) return Map.of();
+
+        Map<Integer, Integer> mapping = new HashMap<>();
+
+        int currentOldLine = -1;
+        int currentNewLine = -1;
+
+        String[] lines = diff.split("\n", -1);
+        for (String line : lines) {
+            HunkStart hunk = parseHunkStarts(line);
+            boolean shouldSkip = false;
+
+            if (hunk != null) {
+                currentOldLine = hunk.oldStart();
+                currentNewLine = hunk.newStart();
+                shouldSkip = true;
+            } else if (!isInHunk(currentOldLine, currentNewLine)) {
+                shouldSkip = true;
+            } else if (isDiffFileHeader(line)) {
+                shouldSkip = true;
+            }
+
+            if (shouldSkip) {
+                continue; //
+            }
+
+            LineCounters updated = processLineForMapping(line, currentOldLine, currentNewLine, mapping);
+            currentOldLine = updated.oldLine();
+            currentNewLine = updated.newLine();
+        }
+
+        return mapping;
+    }
+
+    private static boolean isInHunk(int oldLine, int newLine) {
+        return oldLine > 0 && newLine > 0;
+    }
+
+    private record HunkStart(int oldStart, int newStart) { }
+
+    private static HunkStart parseHunkStarts(String line) {
+        Matcher m = HUNK_PATTERN.matcher(line);
+        if (!m.matches()) return null;
+
+        int oldStart = Integer.parseInt(m.group(1));
+        int newStart = Integer.parseInt(m.group(3));
+        return new HunkStart(oldStart, newStart);
+    }
+
+    private record LineCounters(int oldLine, int newLine) { }
+
+    private static LineCounters processLineForMapping(String line,
+                                                      int currentOldLine,
+                                                      int currentNewLine,
+                                                      Map<Integer, Integer> mapping) {
+
+        // Контекст: есть и old, и new
+        if (line.startsWith(" ")) {
+            mapping.put(currentNewLine, currentOldLine);
+            return new LineCounters(currentOldLine + 1, currentNewLine + 1);
+        }
+
+        // Добавление: есть new, old отсутствует (null)
+        if (line.startsWith("+")) {
+            mapping.put(currentNewLine, null);
+            return new LineCounters(currentOldLine, currentNewLine + 1);
+        }
+
+        // Удаление: сдвигаем только old
+        if (line.startsWith("-")) {
+            return new LineCounters(currentOldLine + 1, currentNewLine);
+        }
+
+        // Нестандартная строка (например "\ No newline at end of file") — не двигаем
+        return new LineCounters(currentOldLine, currentNewLine);
     }
 
     /**
