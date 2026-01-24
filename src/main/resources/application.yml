@@ -57,23 +57,26 @@ chroma:
   rag-max-context-chars-per-file: 1500
   rag-top-files: 5
   rag-economy-mode: true
-
   # --- Ограничение входа для embeddings ---
   max-embedding-query-chars: 15000
+  # --- Индексация RAG документов при старте ---
+  indexing-enabled: true
 
 
 # Spring / инфраструктура
 spring:
   ai: # Настройка конфигурации AI
+    retry:
+      max-attempts: 1 # Ретрай в рамках Open AI
     openai:
       api-key: ${OPENAI_API_KEY}
       chat:
         options:
           model: ${OPENAI_MODEL:gpt-4o-mini}
           temperature: 0.3
-        embedding:
-          options:
-            model: text-embedding-3-small
+      embedding:
+        options:
+          model: text-embedding-3-small
   config:
     import: "optional:file:./.env.properties"
 
@@ -104,3 +107,35 @@ logging:
     org.hibernate: INFO
     org.springframework.boot.autoconfigure.jdbc: DEBUG
     org.springframework.orm.jpa: DEBUG
+
+# Настройки Spring Boot Actuator: какие endpoints доступны, health-детали и т.п.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus,circuitbreakers,circuitbreakerevents,retries,retryevents
+  endpoint:
+    health:
+      show-details: always
+
+# Настройка повторных попыток при сбоях
+resilience4j:
+  retry:
+    instances:
+      openai:
+        max-attempts: 3
+        wait-duration: 500ms
+      gitlab:
+        max-attempts: 2
+        wait-duration: 300ms
+  circuitbreaker:
+    instances:
+      openai:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 20
+        minimum-number-of-calls: 10
+        failure-rate-threshold: 50
+        permitted-number-of-calls-in-half-open-state: 5
+        wait-duration-in-open-state: 30s
+        ignore-exceptions:
+          - com.groviate.telegramcodereviewbot.exception.AiNonRetryableException

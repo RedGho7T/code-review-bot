@@ -16,6 +16,7 @@ import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
+import io.github.resilience4j.retry.annotation.Retry;
 
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
@@ -56,6 +57,7 @@ public class GitLabMergeRequestClient {
      * @return Immutable {@link List} открытых MR для проекта, если null -> пустой список
      * @throws GitlabClientException если произойдёт ошибка при обращении к API / парсинге
      */
+    @Retry(name = "gitlab")
     public List<MergeRequest> getMergeRequestsByProjectId(Integer projectId) {
 
         log.info("Получаем список всех открытых MR для проекта:{}", projectId);
@@ -83,6 +85,7 @@ public class GitLabMergeRequestClient {
         }
     }
 
+    @Retry(name="gitlab")
     public List<MergeRequest> getOpenMergeRequestsUpdatedAfter(Integer projectId, Instant updatedAfter, int perPage) {
         log.info("Получаем opened MR для проекта:{} updatedAfter={}", projectId, updatedAfter);
 
@@ -125,6 +128,7 @@ public class GitLabMergeRequestClient {
      * @return {@link MergeRequest} - полная информация о MR или NULL если не найден
      * @throws GitlabClientException если произойдёт ошибка при обращении к API / парсинге
      */
+    @Retry(name="gitlab")
     public MergeRequest getMergeRequest(Integer projectId, Integer mergeRequestId) {
 
         log.info("Поиск MR в проекте:{} с номером:{}", projectId, mergeRequestId);
@@ -162,6 +166,7 @@ public class GitLabMergeRequestClient {
      * @return Immutable {@link List} {@link MergeRequestDiff} с информацией о каждом изменённом файле
      * @throws GitlabClientException если произойдёт ошибка при обращении к API / парсинге
      */
+    @Retry(name = "gitlab")
     public List<MergeRequestDiff> getChanges(Integer projectId, Integer mergeRequestId) {
 
         log.info("Поиск изменений MR проекта:{} с номером:{}", projectId, mergeRequestId);
@@ -236,6 +241,7 @@ public class GitLabMergeRequestClient {
     /**
      * Публикует комментарий к Merge Request
      */
+    @Retry(name = "gitlab")
     public void postComment(long projectId, long mergeRequestIid, String commentText) {
         log.info("Публикуем комментарий в MR {}/{}", projectId, mergeRequestIid);
 
@@ -250,19 +256,17 @@ public class GitLabMergeRequestClient {
 
             log.info("Комментарий опубликован в MR {}/{}", projectId, mergeRequestIid);
 
-        } catch (GitlabClientException e) {
-            log.error("GitlabClientException при публикации комментария: {}", e.getMessage(), e);
-            throw new GitlabClientException(
-                    "Не удалось опубликовать комментарий для MR " +
-                            projectId + "/" + mergeRequestIid + ": " + e.getMessage(),
-                    e
-            );
+        } catch (Exception e) {
+            throw (e instanceof GitlabClientException ge)
+                    ? ge
+                    : new GitlabClientException("Не удалось опубликовать комментарий ...", e);
         }
     }
 
     /**
      * Публикует встроенный комментарий к строке кода
      */
+    @Retry(name = "gitlab")
     public void postLineComment(Integer projectId,
                                 Integer mergeRequestId,
                                 MergeRequestDiffRefs refs,
@@ -316,6 +320,7 @@ public class GitLabMergeRequestClient {
         }
     }
 
+    @Retry(name="gitlab")
     public MergeRequestDiffRefs getLatestDiffRefs(Integer projectId, Integer mergeRequestId) {
         String url = String.format("%s/projects/%d/merge_requests/%d/versions",
                 gitlabApiUrl, projectId, mergeRequestId);

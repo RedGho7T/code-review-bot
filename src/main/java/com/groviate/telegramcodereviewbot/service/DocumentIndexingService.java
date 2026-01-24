@@ -10,7 +10,6 @@ import okhttp3.RequestBody;
 import okhttp3.Response;
 import okhttp3.ResponseBody;
 import org.springframework.ai.embedding.EmbeddingModel;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.io.Resource;
@@ -41,6 +40,7 @@ import java.util.Map;
 @Slf4j
 public class DocumentIndexingService implements ApplicationRunner {
 
+    private static final String CODING_STANDARDS_COLLECTION_NAME = "coding-standards";
     private static final MediaType JSON = MediaType.get("application/json");
 
     private final RagConfig ragConfig;
@@ -49,9 +49,6 @@ public class DocumentIndexingService implements ApplicationRunner {
     private final ObjectMapper objectMapper;
     private final ResourceLoader resourceLoader;
     private String codingStandardsCollectionId;
-
-    @Value("classpath:prompts/system-prompt.txt")
-    private Resource systemPromptResource;
 
     /**
      * @param ragConfig      - конфигурация RAG (URL ChromaDB, параметры chunks)
@@ -85,6 +82,12 @@ public class DocumentIndexingService implements ApplicationRunner {
      */
     @Override
     public void run(ApplicationArguments args) throws Exception {
+
+        if (!ragConfig.isIndexingEnabled()) {
+            log.info("RAG indexing выключен (chroma.indexing-enabled=false), пропускаю индексирование");
+            return;
+        }
+
         log.info("Запуск индексирования RAG документов");
 
         try {
@@ -120,7 +123,7 @@ public class DocumentIndexingService implements ApplicationRunner {
         log.info("Инициализирую коллекцию 'coding-standards' в ChromaDB");
 
         Map<String, Object> collectionData = new HashMap<>();
-        collectionData.put("name", "coding-standards");
+        collectionData.put("name", CODING_STANDARDS_COLLECTION_NAME);
         collectionData.put("metadata", Map.of("description", "Java coding standards and patterns"));
 
         String jsonBody = objectMapper.writeValueAsString(collectionData);
@@ -139,17 +142,17 @@ public class DocumentIndexingService implements ApplicationRunner {
                 String id = node.path("id").asText(null);
                 if (id != null && !id.isBlank()) {
                     codingStandardsCollectionId = id;
-                    log.info("Коллекция создана: name=coding-standards, id={}", id);
+                    log.info("Коллекция создана: id={}", id);
                     return;
                 }
             }
 
             // Уже существует (409) -> берём по имени
             if (response.code() == 409) {
-                String existingId = getCollectionIdByName("coding-standards");
+                String existingId = getCodingStandardsCollectionId();
                 if (existingId != null && !existingId.isBlank()) {
                     codingStandardsCollectionId = existingId;
-                    log.info("Коллекция уже существует: name=coding-standards, id={}", existingId);
+                    log.info("Коллекция уже существует: name={}, id={}", CODING_STANDARDS_COLLECTION_NAME, existingId);
                     return;
                 }
             }
@@ -170,9 +173,8 @@ public class DocumentIndexingService implements ApplicationRunner {
      * <p>
      * Для каждого документа: загружает и разбивает на chunks → добавляет в ChromaDB.
      *
-     * @throws IOException - при ошибке загрузки или работы с ChromaDB
      */
-    private void indexRagDocuments() throws IOException {
+    private void indexRagDocuments() {
         log.info("Начинаю индексирование RAG документов");
 
         List<String> documentPaths = List.of(
@@ -352,15 +354,15 @@ public class DocumentIndexingService implements ApplicationRunner {
     }
 
     /**
-     * Получает ID коллекции по имени из ChromaDB
+     * Получает идентификатор (ID) коллекции {@value #CODING_STANDARDS_COLLECTION_NAME} из ChromaDB по имени.
      *
-     * @param name - имя коллекции
-     * @return ID коллекции или null если не найдена
-     * @throws IOException - при ошибке сети
+     * @return ID коллекции, если запрос успешен и поле {@code id} присутствует в ответе;
+     * {@code null} если коллекция не найдена, ответ пустой или ChromaDB вернул неуспешный статус.
+     * @throws IOException при сетевых ошибках или ошибках чтения/парсинга ответа.
      */
-    private String getCollectionIdByName(String name) throws IOException {
+    private String getCodingStandardsCollectionId() throws IOException {
         Request request = new Request.Builder()
-                .url(ragConfig.getUrl() + "/api/v1/collections/" + name)
+                .url(ragConfig.getUrl() + "/api/v1/collections/" + CODING_STANDARDS_COLLECTION_NAME)
                 .get()
                 .build();
 

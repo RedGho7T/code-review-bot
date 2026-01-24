@@ -19,6 +19,7 @@ ext {
     okhttpVersion = '4.12.0'
     logstashVersion = '7.4'
     jacocoVersion = '0.8.12'
+    resilience4jVersion = "2.3.0"
 }
 
 jacoco {
@@ -73,6 +74,16 @@ dependencies {
     // Tests
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testImplementation "com.squareup.okhttp3:mockwebserver:${okhttpVersion}"
+
+    // Нужно для работы аннотаций Resilience4j через Spring AOP
+    implementation 'org.springframework.boot:spring-boot-starter-aop'
+
+    // Resilience4j для Spring Boot 3
+    implementation "io.github.resilience4j:resilience4j-spring-boot3:${resilience4jVersion}"
+    implementation "io.github.resilience4j:resilience4j-micrometer:${resilience4jVersion}"
+
+    // Prometheus endpoint /actuator/prometheus
+    runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
 }
 
 def halfCores = (Runtime.runtime.availableProcessors().intdiv(2) ?: 1)

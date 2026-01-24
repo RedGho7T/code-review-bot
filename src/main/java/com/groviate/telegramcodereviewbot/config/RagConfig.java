@@ -115,4 +115,9 @@ public class RagConfig {
      * Бюджет символов на RAG для одного файла из топ-N самых больших diffs.
      */
     private int ragMaxContextCharsPerFile = 1500;
+
+    /**
+     * Индексация документов при старте
+     */
+    private boolean indexingEnabled = true;
 }

@@ -3,14 +3,19 @@ package com.groviate.telegramcodereviewbot.service;
 import com.groviate.telegramcodereviewbot.client.GitLabMergeRequestClient;
 import com.groviate.telegramcodereviewbot.config.CodeReviewProperties;
 import com.groviate.telegramcodereviewbot.entity.ReviewStatus;
+import com.groviate.telegramcodereviewbot.exception.CodeReviewBotException;
 import com.groviate.telegramcodereviewbot.model.CodeReviewResult;
 import com.groviate.telegramcodereviewbot.repository.ReviewStatusRepository;
+import io.micrometer.core.instrument.Timer;
 import jakarta.persistence.OptimisticLockException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import java.util.UUID;
 
@@ -44,6 +49,8 @@ public class ReviewOrchestrator {
     private final CodeReviewService codeReviewService;
     private final GitLabCommentService commentService;
     private final ReviewOrchestrator self; //для асинхронного вызова
+    private final ReviewMetricsService metrics;
+    private static final Pattern ERROR_LINE = Pattern.compile("(?m)^error\\s*=\\s*(.+)$");
 
     /**
      * @param props             - свойства приложения (enabled flag, dry-run mode, лимиты)
@@ -58,13 +65,15 @@ public class ReviewOrchestrator {
                               GitLabMergeRequestClient mrClient,
                               CodeReviewService codeReviewService,
                               GitLabCommentService commentService,
-                              @Lazy ReviewOrchestrator self) {
+                              @Lazy ReviewOrchestrator self,
+                              ReviewMetricsService metrics) {
         this.props = props;
         this.statusRepository = statusRepository;
         this.mrClient = mrClient;
         this.codeReviewService = codeReviewService;
         this.commentService = commentService;
         this.self = self;
+        this.metrics = metrics;
     }
 
     /**
@@ -74,6 +83,7 @@ public class ReviewOrchestrator {
      */
     public void enqueueReview(Integer projectId, Integer mrIid) {
         if (!props.isEnabled()) {
+            metrics.markSkipped(metrics.start());
             log.info("Бот отключен: пропустить проверку для {}/{}", projectId, mrIid);
             return;
         }
@@ -100,58 +110,92 @@ public class ReviewOrchestrator {
      */
     @Async("reviewExecutor")
     public void runReviewAsync(Integer projectId, Integer mrIid) {
+        Timer.Sample sample = metrics.start();
         String runId = UUID.randomUUID().toString().substring(0, 8);
 
         try {
             var mr = mrClient.getMergeRequest(projectId, mrIid);
-            if (mr == null) return;
+
+            if (mr == null) {
+                metrics.markSkipped(sample);
+                return;
+            }
 
             if (!"opened".equalsIgnoreCase(mr.getStatus())) {
                 log.info("[{}] MR не открыт, пропускаем: {}/{}", runId, projectId, mrIid);
+                metrics.markSkipped(sample);
                 return;
             }
+
             if (Boolean.TRUE.equals(mr.getDraft()) || Boolean.TRUE.equals(mr.getWorkInProgress())) {
                 log.info("[{}] MR черновик или не завершен: {}/{}", runId, projectId, mrIid);
+                metrics.markSkipped(sample);
                 return;
             }
 
             String headSha = mr.getSha();
             if (headSha == null || headSha.isBlank()) {
                 log.info("[{}] headSha отсутствует, пропускаем: {}/{}", runId, projectId, mrIid);
+                metrics.markSkipped(sample);
                 return;
             }
 
             if (!self.tryMarkRunning(projectId, mrIid, headSha)) {
                 log.info("[{}] Проверка уже проведена: {}/{}", runId, projectId, mrIid);
+                metrics.markSkipped(sample);
                 return;
             }
 
-            commentService.publishStatusComment(projectId, mrIid,
-                    "[" + runId + "] Старт ревью. SHA=" + headSha);
+            safePublishStatus(projectId, mrIid, "[" + runId + "] Старт ревью. SHA=" + headSha);
 
             var diffs = mrClient.getChanges(projectId, mrIid);
-
-            commentService.publishStatusComment(projectId, mrIid,
-                    "[" + runId +
-                            "] Анализируем изменения в (" + (diffs == null ? 0 : diffs.size()) + " файлов)…");
+            safePublishStatus(projectId, mrIid,
+                    "[" + runId + "] Анализируем изменения в (" + (diffs == null ? 0 : diffs.size()) + " файлов)…");
 
             CodeReviewResult result = codeReviewService.analyzeCode(mr, diffs);
 
-            commentService.publishStatusComment(projectId, mrIid,
+            safePublishStatus(projectId, mrIid,
                     "[" + runId + "] Публикую ревью (score=" + result.getScore() + ")…");
 
             commentService.publishReviewWithInline(projectId, mrIid, result, diffs);
 
-            self.markSuccess(projectId, mrIid, headSha);
+            if (isOpenAiFallback(result)) {
+                String err = extractOpenAiError(result);
+                self.markFailed(projectId, mrIid, err);
+                metrics.markFailed(sample);
 
-            commentService.publishStatusComment(projectId, mrIid,
+                safePublishStatus(projectId, mrIid,
+                        "[" + runId + "] OpenAI недоступен, ревью помечено как FAILED");
+
+                return;
+            }
+
+            self.markSuccess(projectId, mrIid, headSha);
+            metrics.markSuccess(sample);
+
+            safePublishStatus(projectId, mrIid,
                     "[" + runId + "] Готово. Score=" + result.getScore() + "/10");
 
+        } catch (CodeReviewBotException e) {
+            metrics.markFailed(sample);
+
+            String err = e.getCode() + ": " + (e.getMessage() == null ? "" : e.getMessage());
+            self.markFailed(projectId, mrIid, err);
+
+            safePublishStatus(projectId, mrIid,
+                    "[" + runId + "] Ошибка ревью: " + truncate(err, 300));
+
+            log.error("[{}] Ревью завершилось доменной ошибкой для: {}/{}", runId, projectId, mrIid, e);
+
         } catch (Exception e) {
+            metrics.markFailed(sample);
+
             String err = e.getClass().getSimpleName() + ": " + (e.getMessage() == null ? "" : e.getMessage());
             self.markFailed(projectId, mrIid, err);
-            commentService.publishStatusComment(projectId, mrIid,
+
+            safePublishStatus(projectId, mrIid,
                     "[" + runId + "] Ошибка ревью: " + truncate(err, 300));
+
             log.error("[{}] Ревью завершилось ошибкой для: {}/{}", runId, projectId, mrIid, e);
         }
     }
@@ -261,5 +305,36 @@ public class ReviewOrchestrator {
     private static String truncate(String s, int max) {
         if (s == null) return null;
         return s.length() > max ? s.substring(0, max) + "…" : s;
+    }
+
+    private boolean isOpenAiFallback(CodeReviewResult result) {
+        if (result == null) return false;
+        String meta = result.getMetadata();
+        return meta != null && meta.contains("openai_fallback=true");
+    }
+
+    private String extractOpenAiError(CodeReviewResult result) {
+        if (result == null) return "OpenAI fallback";
+
+        String meta = result.getMetadata();
+        if (meta != null) {
+            Matcher m = ERROR_LINE.matcher(meta);
+            if (m.find()) {
+                return m.group(1).trim();
+            }
+        }
+
+        // если в metadata нет строки error=..., берем summary как запасной вариант
+        String summary = result.getSummary();
+        return (summary == null || summary.isBlank()) ? "Ошибка обращения к OpenAI" : summary;
+    }
+
+    private void safePublishStatus(Integer projectId, Integer mrIid, String message) {
+        try {
+            commentService.publishStatusComment(projectId, mrIid, message);
+        } catch (Exception ex) {
+            log.warn("Не удалось опубликовать статус в GitLab для {}/{}: {}",
+                    projectId, mrIid, ex.getMessage(), ex);
+        }
     }
 }

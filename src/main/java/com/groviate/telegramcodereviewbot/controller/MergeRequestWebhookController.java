@@ -1,10 +1,17 @@
 package com.groviate.telegramcodereviewbot.controller;
 
+import com.groviate.telegramcodereviewbot.exception.ReviewProcessingException;
 import com.groviate.telegramcodereviewbot.service.ReviewOrchestrator;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import com.groviate.telegramcodereviewbot.exception.WebhookValidationException;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
 import java.util.concurrent.RejectedExecutionException;
@@ -68,7 +75,7 @@ public class MergeRequestWebhookController {
     ) {
         if (secret != null && !secret.isBlank() && (!secret.equals(token))) {
             log.warn("Invalid webhook token");
-            return ResponseEntity.status(403).body(Map.of(STATUS_KEY, "forbidden"));
+            throw new WebhookValidationException("Invalid webhook token", HttpStatus.FORBIDDEN);
         }
 
         if (event == null || !event.toLowerCase().contains("merge request")) {
@@ -91,7 +98,7 @@ public class MergeRequestWebhookController {
         Integer mrIid = intOrNull(attrs.get("iid"));
 
         if (projectId == null || mrIid == null) {
-            return ResponseEntity.ok(Map.of(STATUS_KEY, STATUS_IGNORED, "reason", "no projectId or iid"));
+            throw new WebhookValidationException("Invalid webhook payload: no projectId or iid", HttpStatus.BAD_REQUEST);
         }
 
         // реагируем только на действия, где есть изменения в MR (open, reopen, update)
@@ -104,8 +111,7 @@ public class MergeRequestWebhookController {
         try {
             orchestrator.enqueueReview(projectId, mrIid);
         } catch (RejectedExecutionException e) {
-            return ResponseEntity.status(503)
-                    .body(Map.of(STATUS_KEY, "queue_full", "error", e.getMessage()));
+            throw new ReviewProcessingException("Queue is full", HttpStatus.SERVICE_UNAVAILABLE, e);
         }
 
         return ResponseEntity.ok(Map.of(

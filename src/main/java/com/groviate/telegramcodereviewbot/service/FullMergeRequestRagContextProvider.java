@@ -1,5 +1,6 @@
 package com.groviate.telegramcodereviewbot.service;
 
+import com.groviate.telegramcodereviewbot.exception.RagContextException;
 import com.groviate.telegramcodereviewbot.model.MergeRequestDiff;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -99,7 +100,14 @@ public class FullMergeRequestRagContextProvider implements MergeRequestRagContex
      * @return форматированный блок RAG или пустая строка если RAG не найден
      */
     private String toRagBlock(MergeRequestDiff diff) {
-        String fileRag = ragContextService.getContextForCode(diff.getDiff());
+        final String fileRag;
+        try {
+            fileRag = ragContextService.getContextForCode(diff.getDiff());
+        } catch (RagContextException e) {
+            log.warn("RAG failed for file {}, continue without RAG: {}", resolveFilePath(diff), e.getMessage());
+            return "";
+        }
+
         if (!isNotBlank(fileRag)) {
             return "";
         }

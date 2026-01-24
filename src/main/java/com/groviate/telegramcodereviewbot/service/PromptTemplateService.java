@@ -1,11 +1,13 @@
 package com.groviate.telegramcodereviewbot.service;
 
 import com.groviate.telegramcodereviewbot.config.CodeReviewProperties;
+import com.groviate.telegramcodereviewbot.exception.ReviewProcessingException;
 import com.groviate.telegramcodereviewbot.model.MergeRequestDiff;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
@@ -54,12 +56,12 @@ public class PromptTemplateService {
             log.info("Шаблон пользовательского промпта загружен, размер: {} символов", userPromptTemplate.length());
         } catch (Exception e) {
             log.error("Не удалось загрузить промпты из файлов", e);
-            throw new IllegalStateException("""
-                    Не удалось загрузить промпты из resources/prompts/
-                    Проверь что существуют файлы:
-                    - src/main/resources/prompts/system-prompt.txt
-                    - src/main/resources/prompts/user-prompt.txt
-                    """, e);
+            throw new ReviewProcessingException("""
+            Failed to load prompts from resources/prompts/.
+            Check files:
+            - src/main/resources/prompts/system-prompt.txt
+            - src/main/resources/prompts/user-prompt.txt
+            """, HttpStatus.INTERNAL_SERVER_ERROR, e);
         }
     }
 

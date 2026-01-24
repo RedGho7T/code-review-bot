@@ -3,6 +3,7 @@ package com.groviate.telegramcodereviewbot.service;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.groviate.telegramcodereviewbot.config.RagConfig;
+import com.groviate.telegramcodereviewbot.exception.RagContextException;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.MediaType;
@@ -87,7 +88,7 @@ public class RagContextService {
 
         } catch (Exception e) {
             log.error("Ошибка при получении RAG контекста", e);
-            return "";
+            throw new RagContextException("Failed to build RAG context", e);
         }
     }
 
