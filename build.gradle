@@ -1,6 +1,6 @@
 plugins {
     id 'java'
-    id 'org.springframework.boot' version '3.4.13'
+    id 'org.springframework.boot' version '3.2.0' // Изменено на версию из POM
     id 'io.spring.dependency-management' version '1.1.7'
     id 'jacoco'
 }
@@ -15,6 +15,7 @@ java {
 }
 
 ext {
+    telegrambotsVersion = '6.8.0' // Из POM
     springAiVersion = '1.1.0'
     okhttpVersion = '4.12.0'
     logstashVersion = '7.4'
@@ -37,64 +38,81 @@ dependencyManagement {
 }
 
 dependencies {
-    // Spring Boot starters
-    implementation 'org.springframework.boot:spring-boot-starter-web'
-    implementation 'org.springframework.boot:spring-boot-starter-webflux'
-    implementation 'org.springframework.boot:spring-boot-starter-actuator'
-    implementation 'org.springframework.boot:spring-boot-starter-validation'
+    // Spring Boot starters (основные из POM)
+    implementation 'org.springframework.boot:spring-boot-starter'
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
 
-    // DB & migrations
+    // Дополнительные стартеры из Gradle (оставляем полезные)
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+
+    // Telegram Bot API (из POM)
+    implementation "org.telegram:telegrambots:${telegrambotsVersion}"
+    implementation "org.telegram:telegrambots-spring-boot-starter:${telegrambotsVersion}"
+
+    // DB & migrations (из POM и Gradle)
     runtimeOnly 'org.postgresql:postgresql'
     implementation 'org.flywaydb:flyway-core'
-    runtimeOnly 'org.flywaydb:flyway-database-postgresql'
 
-    // H2 для тестов
+    // H2 для тестов (оставляем из Gradle)
     testImplementation 'com.h2database:h2'
 
-    // Spring AI
+    // Spring AI (оставляем из Gradle если нужно)
     implementation 'org.springframework.ai:spring-ai-starter-model-openai'
 
-    // HTTP / integration
-    implementation "com.squareup.okhttp3:okhttp:${okhttpVersion}"
+    // XML Bind (ВАЖНО из POM)
+    implementation 'jakarta.xml.bind:jakarta.xml.bind-api:4.0.1'
+    implementation 'org.glassfish.jaxb:jaxb-runtime:4.0.3'
+    implementation 'javax.xml.bind:jaxb-api:2.4.0-b180830.0359'
 
-    // Logging
-    implementation "net.logstash.logback:logstash-logback-encoder:${logstashVersion}"
+    // YAML (из POM)
+    implementation 'org.yaml:snakeyaml'
 
-    // Lombok
+    // Lombok (из POM)
     compileOnly 'org.projectlombok:lombok'
     annotationProcessor 'org.projectlombok:lombok'
 
-    // Config metadata (для подсказок в application.yml)
+    // Config metadata (оставляем из Gradle)
     annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
 
-    // Dev
+    // Dev (оставляем из Gradle)
     developmentOnly 'org.springframework.boot:spring-boot-devtools'
 
-    // Tests
+    // Tests (из POM и Gradle)
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
-    testImplementation "com.squareup.okhttp3:mockwebserver:${okhttpVersion}"
 
-    // Нужно для работы аннотаций Resilience4j через Spring AOP
+    // Logging (оставляем из Gradle)
+    implementation "net.logstash.logback:logstash-logback-encoder:${logstashVersion}"
+
+    // HTTP / integration (оставляем из Gradle если нужно)
+    implementation "com.squareup.okhttp3:okhttp:${okhttpVersion}"
+
+    // Resilience4j и AOP (оставляем из Gradle если нужно)
     implementation 'org.springframework.boot:spring-boot-starter-aop'
-
-    // Resilience4j для Spring Boot 3
     implementation "io.github.resilience4j:resilience4j-spring-boot3:${resilience4jVersion}"
     implementation "io.github.resilience4j:resilience4j-micrometer:${resilience4jVersion}"
 
-    // Prometheus endpoint /actuator/prometheus
+     implementation 'org.springframework.boot:spring-boot-starter-webflux'
+     implementation 'org.springframework.boot:spring-boot-starter-actuator'
     runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
+}
+
+// Если нужен Spring Boot Maven Plugin эквивалент
+springBoot {
+    buildInfo()
+}
+
+// Конфигурация плагина Spring Boot (эквивалент Maven конфигурации)
+bootJar {
+    // Эквивалент excludes из Maven POM
+    requiresUnpack '**/lombok-*.jar'
 }
 
 def halfCores = (Runtime.runtime.availableProcessors().intdiv(2) ?: 1)
 
 tasks.withType(Test).configureEach {
     useJUnitPlatform()
-
     systemProperty 'spring.profiles.active', 'test'
-
-    // Токен можно переопределить из реального окружения, локально будет "test-token"
-    environment 'GITLAB_API_TOKEN', (System.getenv('GITLAB_API_TOKEN') ?: 'test-token')
 
     testLogging {
         events "passed", "skipped", "failed"
@@ -107,7 +125,7 @@ test {
     finalizedBy jacocoTestReport
 }
 
-// Модульные тесты: src/test/java/**/unit/**
+// Модульные тесты
 tasks.register('unitTest', Test) {
     description = 'Runs unit tests from the unit folder.'
     group = 'verification'
@@ -123,7 +141,7 @@ tasks.register('unitTest', Test) {
     }
 }
 
-// Интеграционные тесты: src/test/java/**/integration/** + *ApplicationTests*
+// Интеграционные тесты
 tasks.register('integrationTest', Test) {
     description = 'Runs integration tests from the integration folder.'
     group = 'verification'
@@ -148,7 +166,6 @@ tasks.register('jacocoUnitTestReport', JacocoReport) {
     }
 
     executionData.from(layout.buildDirectory.file("jacoco/unitTest.exec"))
-
     sourceDirectories.setFrom files(sourceSets.main.allSource.srcDirs)
     classDirectories.setFrom files(sourceSets.main.output.classesDirs)
 }
@@ -162,7 +179,16 @@ tasks.register('jacocoIntegrationTestReport', JacocoReport) {
     }
 
     executionData.from(layout.buildDirectory.file("jacoco/integrationTest.exec"))
-
     sourceDirectories.setFrom files(sourceSets.main.allSource.srcDirs)
     classDirectories.setFrom files(sourceSets.main.output.classesDirs)
+}
+
+// Общий отчет Jacoco
+jacocoTestReport {
+    dependsOn test
+    reports {
+        xml.required = true
+        html.required = true
+        html.outputLocation = layout.buildDirectory.dir('reports/jacoco/jacocoTestReport')
+    }
 }
