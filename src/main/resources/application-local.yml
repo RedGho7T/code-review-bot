@@ -1,8 +1,6 @@
 spring:
   jpa:
     open-in-view: true
-    config:
-      import: "optional:file:.env"
 
 logging:
   level:
@@ -13,3 +11,22 @@ code-review:
   dry-run: true
   scheduler-enabled: false
   rag-enabled: true
+  test-endpoints-enabled: true
+
+chroma:
+  top-k: 5
+  similarity-threshold: 0.4
+  # --- Ограничения RAG-контекста ---
+  max-rag-chars-total: 8000
+  max-rag-chars-per-doc: 1500
+  max-rag-docs-per-source: 2
+  max-rag-sources: 3
+  rag-max-context-chars-total: 12000
+  rag-max-context-chars-general: 4500
+  rag-max-context-chars-per-file: 1500
+  rag-top-files: 5
+  rag-economy-mode: true
+  # --- Ограничение входа для embeddings ---
+  max-embedding-query-chars: 15000
+  # --- Индексация RAG документов при старте ---
+  indexing-enabled: true

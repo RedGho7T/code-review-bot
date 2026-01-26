@@ -150,25 +150,27 @@ public class ReviewOrchestrator {
 
             var diffs = mrClient.getChanges(projectId, mrIid);
             safePublishStatus(projectId, mrIid,
-                    "[" + runId + "] Анализируем изменения в (" + (diffs == null ? 0 : diffs.size()) + " файлов)…");
+                    "[" + runId
+                            + "] Анализируем изменения в (" + (diffs == null ? 0 : diffs.size()) + " файлов)…");
 
             CodeReviewResult result = codeReviewService.analyzeCode(mr, diffs);
+
+            if (isOpenAiFallback(result)) {
+                String err = extractOpenAiError(result);
+
+                self.markFailed(projectId, mrIid, err);
+                metrics.markFailed(sample);
+
+                safePublishStatus(projectId, mrIid,
+                        "[" + runId + "] OpenAI недоступен — ревью не опубликовано. Причина: " + truncate(err, 300));
+
+                return;
+            }
 
             safePublishStatus(projectId, mrIid,
                     "[" + runId + "] Публикую ревью (score=" + result.getScore() + ")…");
 
             commentService.publishReviewWithInline(projectId, mrIid, result, diffs);
-
-            if (isOpenAiFallback(result)) {
-                String err = extractOpenAiError(result);
-                self.markFailed(projectId, mrIid, err);
-                metrics.markFailed(sample);
-
-                safePublishStatus(projectId, mrIid,
-                        "[" + runId + "] OpenAI недоступен, ревью помечено как FAILED");
-
-                return;
-            }
 
             self.markSuccess(projectId, mrIid, headSha);
             metrics.markSuccess(sample);
@@ -307,12 +309,24 @@ public class ReviewOrchestrator {
         return s.length() > max ? s.substring(0, max) + "…" : s;
     }
 
+    /**
+     * Проверяет, был ли результат ревью сформирован через fallback (OpenAI недоступен / circuit breaker открыт)
+     *
+     * @param result результат анализа кода (может быть null)
+     * @return true если в metadata присутствует маркер fallback, иначе false
+     */
     private boolean isOpenAiFallback(CodeReviewResult result) {
         if (result == null) return false;
         String meta = result.getMetadata();
         return meta != null && meta.contains("openai_fallback=true");
     }
 
+    /**
+     * Извлекает краткое описание причины OpenAI fallback из {@link CodeReviewResult}
+     *
+     * @param result результат анализа кода (может быть null)
+     * @return текст ошибки (никогда не null)
+     */
     private String extractOpenAiError(CodeReviewResult result) {
         if (result == null) return "OpenAI fallback";
 
@@ -329,6 +343,13 @@ public class ReviewOrchestrator {
         return (summary == null || summary.isBlank()) ? "Ошибка обращения к OpenAI" : summary;
     }
 
+    /**
+     * Публикует служебный статус-комментарий в Merge Request, не прерывая основной процесс ревью
+     *
+     * @param projectId ID проекта в GitLab
+     * @param mrIid     IID Merge Request
+     * @param message   текст статусного сообщения
+     */
     private void safePublishStatus(Integer projectId, Integer mrIid, String message) {
         try {
             commentService.publishStatusComment(projectId, mrIid, message);

@@ -4,6 +4,8 @@ import com.groviate.telegramcodereviewbot.exception.ReviewProcessingException;
 import com.groviate.telegramcodereviewbot.service.ReviewOrchestrator;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.http.ResponseEntity;
 import com.groviate.telegramcodereviewbot.exception.WebhookValidationException;
 import org.springframework.http.HttpStatus;
@@ -13,6 +15,9 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.RejectedExecutionException;
 
@@ -28,18 +33,23 @@ public class MergeRequestWebhookController {
     private static final String ACTION_KEY = "action";
     private static final String STATUS_KEY = "status";
     private static final String STATUS_IGNORED = "ignored";
+    private static final String HEADER_TOKEN = "X-Gitlab-Token";
+    private static final String HEADER_EVENT = "X-Gitlab-Event";
 
     private final ReviewOrchestrator orchestrator;
     private final String secret;
+    private final Environment environment;
 
     /**
      * @param orchestrator - ReviewOrchestrator для постановки MR в очередь
      * @param secret       - webhook secret из конфигурации gitlab.webhook.secret (опционально)
      */
     public MergeRequestWebhookController(ReviewOrchestrator orchestrator,
-                                         @Value("${gitlab.webhook.secret:}") String secret) {
+                                         @Value("${gitlab.webhook.secret:}") String secret,
+                                         Environment environment) {
         this.orchestrator = orchestrator;
         this.secret = secret;
+        this.environment = environment;
     }
 
     /**
@@ -69,16 +79,13 @@ public class MergeRequestWebhookController {
      */
     @PostMapping("/merge-request")
     public ResponseEntity<Map<String, Object>> onMergeRequest(
-            @RequestHeader(value = "X-Gitlab-Token", required = false) String token,
-            @RequestHeader(value = "X-Gitlab-Event", required = false) String event,
+            @RequestHeader(value = HEADER_TOKEN, required = false) String token,
+            @RequestHeader(value = HEADER_EVENT, required = false) String event,
             @RequestBody Map<String, Object> payload
     ) {
-        if (secret != null && !secret.isBlank() && (!secret.equals(token))) {
-            log.warn("Invalid webhook token");
-            throw new WebhookValidationException("Invalid webhook token", HttpStatus.FORBIDDEN);
-        }
+        validateSecretToken(token);
 
-        if (event == null || !event.toLowerCase().contains("merge request")) {
+        if (event == null || !event.toLowerCase(Locale.ROOT).contains("merge request")) {
             return ResponseEntity.ok(Map.of(STATUS_KEY, STATUS_IGNORED, "reason", "not MR event"));
         }
 
@@ -146,6 +153,38 @@ public class MergeRequestWebhookController {
             return Integer.parseInt(String.valueOf(o));
         } catch (Exception e) {
             return null;
+        }
+    }
+
+    /**
+     * Валидирует секретный токен вебхука GitLab
+     *
+     * @param tokenFromHeader значение header {@code X-Gitlab-Token} (может быть null)
+     * @throws WebhookValidationException если secret обязателен, но не задан, либо токен отсутствует/не совпадает
+     */
+    private void validateSecretToken(String tokenFromHeader) {
+        boolean isProd = environment.acceptsProfiles(Profiles.of("prod"));
+
+        if (secret == null || secret.isBlank()) {
+            if (isProd) {
+                log.warn("Webhook secret is not configured in prod profile");
+                throw new WebhookValidationException("Webhook secret is required in prod", HttpStatus.FORBIDDEN);
+            }
+            return;
+        }
+
+        // secret задан -> token обязателен
+        if (tokenFromHeader == null || tokenFromHeader.isBlank()) {
+            log.warn("Missing webhook token header: {}", HEADER_TOKEN);
+            throw new WebhookValidationException("Missing webhook token", HttpStatus.FORBIDDEN);
+        }
+        boolean equals = MessageDigest.isEqual(
+                secret.getBytes(StandardCharsets.UTF_8),
+                tokenFromHeader.getBytes(StandardCharsets.UTF_8)
+        );
+        if (!equals) {
+            log.warn("Invalid webhook token");
+            throw new WebhookValidationException("Invalid webhook token", HttpStatus.FORBIDDEN);
         }
     }
 }

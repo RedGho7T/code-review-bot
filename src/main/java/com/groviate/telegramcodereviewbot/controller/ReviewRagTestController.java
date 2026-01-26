@@ -7,13 +7,19 @@ import com.groviate.telegramcodereviewbot.service.CodeReviewService;
 import com.groviate.telegramcodereviewbot.service.InlineCommentPlannerService;
 import com.groviate.telegramcodereviewbot.service.ReviewOrchestrator;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
 
 @RestController
 @Slf4j
 @RequestMapping("/api/test/review")
+@ConditionalOnProperty(prefix = "code-review", name = "test-endpoints-enabled", havingValue = "true")
 public class ReviewRagTestController {
 
     private final CodeReviewService codeReviewService;

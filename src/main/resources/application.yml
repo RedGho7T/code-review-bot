@@ -92,7 +92,7 @@ spring:
       ddl-auto: validate
     properties:
       hibernate:
-        dialect:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
 
   flyway:
     enabled: true

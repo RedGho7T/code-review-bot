@@ -119,4 +119,10 @@ public class CodeReviewProperties {
      * Включение/выключение служебных статус-комментариев
      */
     private boolean statusCommentsEnabled = true;
+
+     /**
+     * Включает тестовые REST endpoints (ReviewRagTestController).
+     * Должно быть false на проде.
+     */
+     private boolean testEndpointsEnabled = false;
 }

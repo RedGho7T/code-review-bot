@@ -22,7 +22,7 @@ public class RestClientConfig {
     ) {
         ClientHttpRequestInterceptor auth = (request, body, execution) -> {
             if (gitlabToken != null && !gitlabToken.isBlank()) {
-                request.getHeaders().add("Private-Token", gitlabToken);
+                request.getHeaders().add("PRIVATE-TOKEN", gitlabToken);
             }
             return execution.execute(request, body);
         };

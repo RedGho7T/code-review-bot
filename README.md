@@ -353,6 +353,11 @@ SPRING_PROFILES_ACTIVE=local ./gradlew bootRun
 
 > Если конфиги настроены корректно — обычно обходится без явного указания профиля.
 
+**Вариант C — самый простой и постоянный через application.properties**
+
+1. В application.properties добавить строчку: spring.profiles.default=local
+2. Запустить `TelegramCodeReviewBotApplication` (Run)
+
 ---
 
 ## 3. Продакшен запуск в Docker (всё в Docker)

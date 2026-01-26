@@ -139,17 +139,20 @@ public class CommentFormatterService {
      * @return отформатированная строка типа "🌟 Результат ревью: 9/10"
      */
     private String formatScoreHeader(Integer score) {
+        int safeScore = (score == null) ? 0 : score;
+
         String emoji;
-        if (score >= 9) {
+        if (safeScore >= 9) {
             emoji = "🌟";
-        } else if (score >= 7) {
+        } else if (safeScore >= 7) {
             emoji = "✅";
-        } else if (score >= 5) {
+        } else if (safeScore >= 5) {
             emoji = "⚠️";
         } else {
             emoji = "❌";
         }
-        return String.format("## %s Результат ревью: %d/10%n", emoji, score);
+
+        return String.format("## %s Результат ревью: %d/10%n", emoji, safeScore);
     }
 
     /**

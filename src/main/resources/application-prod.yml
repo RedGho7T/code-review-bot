@@ -1,17 +1,32 @@
+code-review:
+  enabled: true
+  dry-run: false
+  scheduler-enabled: true
+  rag-enabled: true
+  test-endpoints-enabled: false
+
 spring:
   jpa:
     open-in-view: false
   flyway:
     enabled: true
 
+chroma:
+  rag-economy-mode: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      show-details: never
+
 logging:
   level:
     root: INFO
-
-code-review:
-  dry-run: true
-  scheduler-enabled: true
-  rag-enabled: true
-
-chroma:
-  rag-economy-mode: true
+    org.springframework.ai: INFO
+    org.springframework.web: INFO
+    org.springframework.http: INFO
+    org.hibernate.SQL: WARN
