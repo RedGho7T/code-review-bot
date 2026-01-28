@@ -2,7 +2,9 @@ package com.groviate.telegramcodereviewbot.service;
 
 import com.groviate.telegramcodereviewbot.entity.Level;
 import com.groviate.telegramcodereviewbot.entity.User;
+import com.groviate.telegramcodereviewbot.entity.UserScore;
 import com.groviate.telegramcodereviewbot.repository.UserRepository;
+import com.groviate.telegramcodereviewbot.repository.UserScoreRepository;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
@@ -11,6 +13,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.HashSet;
 import java.util.Optional;
 
 @Service
@@ -19,12 +22,13 @@ import java.util.Optional;
 public class UserProgressService {
 
     private final UserRepository userRepository;
+    private final UserScoreRepository userScoreRepository;
 
     /**
      * Получить пользователя 
      */
     @Transactional
-    public User getOrCreateUser(Long chatId, String username, String firstName, String lastName) {
+    public User getOrCreateUser(Long chatId, String username, String firstName) {
         Optional<User> existingUser = userRepository.findByChatId(chatId);
 
         if (existingUser.isPresent()) {
@@ -73,6 +77,47 @@ public class UserProgressService {
         return userRepository.findByChatId(chatId)
                 .map(user -> user.hasCompletedTask(taskId))
                 .orElse(false);
+    }
+
+    /**
+     * Обнуление очков и уровня
+     */
+    public User resetUser(Long chatId){
+        Optional<User> existingUser = userRepository.findByChatId(chatId);
+        User user = existingUser.get();
+        user.setLastActivityAt(LocalDateTime.now());
+
+        UserScore score = new UserScore();
+        score.setUser(user);
+        score.setPoints(0);
+
+        userScoreRepository.save(score);
+
+        user.setTotalPoints(0);
+
+        return userRepository.save(user);
+    }
+
+    /**
+     * Установить определенное количество очков(points)
+     */
+    public User upScore(Long chatId){
+        Optional<User> existingUser = userRepository.findByChatId(chatId);
+            User user = existingUser.get();
+            user.setLastActivityAt(LocalDateTime.now());
+
+            UserScore score = new UserScore();
+            score.setUser(user);
+            score.setPoints(1000);
+            score.setCreatedAt(LocalDateTime.now());
+            score.setSourceType("admin_bonus");
+
+            userScoreRepository.save(score);
+
+            user.setTotalPoints(user.getTotalPoints() + 1000);
+
+        return userRepository.save(user);
+
     }
 
     /**

@@ -41,7 +41,7 @@ public class KeyboardFactory {
 
         // Третий ряд
         KeyboardRow row3 = new KeyboardRow();
-        User user = userProgressService.getOrCreateUser(chatId, "", "", "");
+        User user = userProgressService.getOrCreateUser(chatId, "", "");
 
         if (user.getTotalPoints() >= 200) {
             row3.add("🚀 Продвинутые задания");
@@ -55,15 +55,26 @@ public class KeyboardFactory {
             row3.add("🔒 Набери 100 очков");
         }
 
+        // Четвертый ряд
+//        KeyboardRow row4 = new KeyboardRow();
+//        if (user.getTotalPoints() >= 200) {
+//            row4.add("🚀 Вайб-кодинг");
+//        } else {
+//            row4.add("🔒 Набери 200 очков");
+//        }
+
         keyboard.add(row1);
         keyboard.add(row2);
         keyboard.add(row3);
+        //keyboard.add(row4);
 
         keyboardMarkup.setKeyboard(keyboard);
         return keyboardMarkup;
     }
 
-    // Меню первых шагов
+    /**
+     * Класс отвечающий за создание кнопок "Первые шаги"
+     */
     public ReplyKeyboardMarkup createFirstStepsKeyboard() {
         ReplyKeyboardMarkup keyboardMarkup = new ReplyKeyboardMarkup();
         keyboardMarkup.setResizeKeyboard(true);
@@ -71,15 +82,15 @@ public class KeyboardFactory {
         List<KeyboardRow> keyboard = new ArrayList<>();
 
         KeyboardRow row1 = new KeyboardRow();
-        row1.add("1. Установка окружения");
-        row1.add("2. Настройка IDE");
+        row1.add("Установка окружения");
+        row1.add("Настройка IDE");
 
         KeyboardRow row2 = new KeyboardRow();
-        row2.add("3. Первый запуск");
-        row2.add("4. Git workflow");
+        row2.add("Первый запуск");
+        row2.add("Git workflow");
 
         KeyboardRow row3 = new KeyboardRow();
-        row3.add("⬅️ Назад в меню");
+        row3.add("⬅️ Главное меню");
 
         keyboard.add(row1);
         keyboard.add(row2);

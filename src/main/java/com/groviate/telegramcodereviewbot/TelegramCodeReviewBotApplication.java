@@ -18,9 +18,6 @@ import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
 public class TelegramCodeReviewBotApplication {
 
     public static void main(String[] args) {
-        System.out.println("Запуск Telegram бота");
-        System.out.println("========================================");
-
         // Запускаем Spring Boot приложение
         ConfigurableApplicationContext context = SpringApplication.run(TelegramCodeReviewBotApplication.class, args);
 
