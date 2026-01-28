@@ -62,8 +62,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
             userProgressService.getOrCreateUser(
                     chatId,
                     user.getUserName(),
-                    user.getFirstName(),
-                    user.getLastName()
+                    user.getFirstName()
             );
 
             // Обрабатываем сообщение
@@ -140,6 +139,23 @@ public class TelegramBotService extends TelegramLongPollingBot {
                 sendMessage(chatId, leaderboardService.getFormattedLeaderboard(),
                         keyboardFactory.createMainMenuKeyboard(chatId));
                 break;
+
+            case "Установка окружения":
+                sendMessage(chatId, "Инфо о окружении", keyboardFactory.createFirstStepsKeyboard());
+                break;
+
+            case "Настройка IDE":
+                sendMessage(chatId, "Инфо о настройках IDEA", keyboardFactory.createFirstStepsKeyboard());
+                break;
+
+            case "Первый запуск":
+                sendMessage(chatId, "Инфо о первом запуске", keyboardFactory.createFirstStepsKeyboard());
+                break;
+
+            case "Git workflow":
+                sendMessage(chatId, "Бла бла бла", keyboardFactory.createFirstStepsKeyboard());
+                break;
+
             default:
                 sendMessage(chatId, "🤔 Я не понял запрос. Выбери вариант из клавиатуры.",
                         keyboardFactory.createMainMenuKeyboard(chatId));
@@ -180,6 +196,15 @@ public class TelegramBotService extends TelegramLongPollingBot {
                 sendMainMenu(chatId);
                 break;
 
+            case "/reset":
+                userProgressService.resetUser(chatId);
+                sendMessage(chatId, "Сброс очков!", keyboardFactory.createMainMenuKeyboard(chatId));
+                break;
+
+            case "/upscore":
+                userProgressService.upScore(chatId);
+                sendMessage(chatId, "Кол-во + 1000 очков!", keyboardFactory.createMainMenuKeyboard(chatId));
+                break;
             default:
                 sendMessage(chatId, "🤔 Неизвестная команда. Напиши /help для списка команд.",
                         keyboardFactory.createMainMenuKeyboard(chatId));
@@ -289,26 +314,26 @@ public class TelegramBotService extends TelegramLongPollingBot {
      * Показать информацию о проекте
      */
     private void showProjectInfo(Long chatId) {
-        String response = "ℹ️ О проекте\n\n" +
-                "Название: Habit Tracker\n" +
-                "Технологии: Java, микросервисная архитектура\n" +
-                "Фреймворк: Spring Boot\n" +
-                "Сборка: Gradle 8.5\n" +
-                "База данных: PostgreSQL, MongoDB\n" +
-                "Брокер сообщений: Kafka\n" +
-                "Кэширование: Redis\n" +
-                "Контейнеры и оркестрация: Docker, MiniKube\n" +
-                "Мониторинг и логирование: Prometheus, Grafana, Grafana Loki, SLF4J\n" +
-                "Документация: Swagger, JavaDoc\n" +
-                "Миграции БД: Liquibase\n" +
-                "Тестирование: JUnit, SpringTest, Postman, Mockito, Testcontainers\n" +
-                "Инструменты: Postman, Swagger, curl для API тестов\n" +
-                "Покрытие тестами: JaCoCO\n" +
-                "Качество кода: CheckStyle, SonarQube plugin IDEA, SonarQube server\n" +
-                "Контроль версий: Git, GitLab\n" +
-                "CI/CD: GitLab CI\n" +
-                "Команда: Твоя awesome команда!\n\n" +
-                "📅 Версия: 1.0.0";
+        String response = "ℹ️ *О проекте*\n\n" +
+                "*Название*: Habit Tracker\n" +
+                "*Технологии*: Java, микросервисная архитектура\n" +
+                "*Фреймворк*: Spring Boot\n" +
+                "*Сборка*: Gradle 8.5\n" +
+                "*База данных*: PostgreSQL, MongoDB\n" +
+                "*Брокер сообщений*: Kafka\n" +
+                "*Кэширование*: Redis\n" +
+                "*Контейнеры и оркестрация*: Docker, MiniKube\n" +
+                "*Мониторинг и логирование*: Prometheus, Grafana, Grafana Loki, SLF4J\n" +
+                "*Документация*: Swagger, JavaDoc\n" +
+                "*Миграции БД*: Liquibase\n" +
+                "*Тестирование*: JUnit, SpringTest, Postman, Mockito, Testcontainers\n" +
+                "*Инструменты*: Postman, Swagger, curl для API тестов\n" +
+                "*Покрытие тестами*: JaCoCO\n" +
+                "*Качество кода*: CheckStyle, SonarQube plugin IDEA, SonarQube server\n" +
+                "*Контроль версий*: Git, GitLab\n" +
+                "*CI/CD*: GitLab CI\n" +
+                "*Команда*: Твоя awesome команда!\n\n" +
+                "📅 *Версия*: 1.0.0";
         sendMessage(chatId, response, keyboardFactory.createMainMenuKeyboard(chatId));
     }
 
@@ -496,6 +521,12 @@ public class TelegramBotService extends TelegramLongPollingBot {
             }
         }
     }
+
+    /**
+     * Обработка кнопок в "Первые шаги"
+     * Here will be needed method
+     */
+
 
     /**
      * Универсальный метод отправки сообщения с клавиатурой
