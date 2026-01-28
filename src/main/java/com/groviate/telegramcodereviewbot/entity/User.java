@@ -18,6 +18,7 @@ import lombok.NoArgsConstructor;
 import lombok.ToString;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -33,34 +34,47 @@ public class User {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    /**
+     * Переменная хранящая ID чата, присваиавется ТГ апи автоматом*/
     @Column(name = "chat_id", unique = true, nullable = false)
     private Long chatId;
 
+    /**
+     * Username пользователя*/
     @Column(name = "telegram_username")
     private String telegramUsername;
 
+    /**
+     * Ник пользователя установленный в тг*/
     @Column(name = "first_name")
     private String firstName;
 
-    @Column(name = "last_name")
-    private String lastName;
-
+    /**
+     * Переменная хранящая username пользователя*/
     @Column(name = "current_level")
     @Builder.Default
     private Integer currentLevel = 1;
 
+    /**
+     * Уровень игрока (не юзается)*/
     @Column(name = "max_unlocked_level")
     @Builder.Default
     private Integer maxUnlockedLevel = 1;
 
+    /**
+     * Кол-во очков пользователя*/
     @Column(name = "total_points")
     @Builder.Default
     private Integer totalPoints = 0;
 
+    /**
+     * Первое касания бота (не юзается)*/
     @Column(name = "created_at")
     @Builder.Default
     private LocalDateTime createdAt = LocalDateTime.now();
 
+    /**
+     * Последнее взаимодействие с ботом (не юзается)*/
     @Column(name = "last_activity_at")
     @Builder.Default
     private LocalDateTime lastActivityAt = LocalDateTime.now();
@@ -70,6 +84,12 @@ public class User {
     @ToString.Exclude
     @EqualsAndHashCode.Exclude
     private Set<CompletedTask> completedTasks = new HashSet<>();
+
+    @OneToMany(mappedBy = "user", cascade = CascadeType.ALL)
+    @Builder.Default
+    @ToString.Exclude
+    @EqualsAndHashCode.Exclude
+    private Set<UserScore> scores = new HashSet<>();
 
     /**
      * Проверить, выполнена ли задача
@@ -89,14 +109,14 @@ public class User {
     }
 
     /**
-     * Отметить задачу как выполненную (сразу начисляем очки)
+     * Отметить задачу как выполненную (с сохранением истории очков)
      */
     public void markTaskCompleted(String taskId, int points, String taskName) {
-        // Проверяем, не выполнена ли уже эта задача
         if (hasCompletedTask(taskId)) {
             return;
         }
 
+        // Создаем CompletedTask
         CompletedTask completedTask = CompletedTask.builder()
                 .user(this)
                 .taskId(taskId)
@@ -106,6 +126,20 @@ public class User {
                 .build();
 
         completedTasks.add(completedTask);
+
+        // Создаем UserScore для истории
+        UserScore score = UserScore.builder()
+                .user(this)
+                .points(points)
+                .sourceType("task")
+                .sourceId(taskId)
+                .build();
+
+        if (scores == null) {
+            scores = new HashSet<>();
+        }
+        scores.add(score);
+
         totalPoints += points;
         lastActivityAt = LocalDateTime.now();
     }

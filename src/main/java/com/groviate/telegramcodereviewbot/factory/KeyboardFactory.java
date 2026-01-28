@@ -39,16 +39,20 @@ public class KeyboardFactory {
         row2.add("ℹ️ О проекте");
         row2.add("\uD83D\uDCCA Моя статистика");
 
+        // Третий ряд
         KeyboardRow row3 = new KeyboardRow();
-
         User user = userProgressService.getOrCreateUser(chatId, "", "", "");
 
         if (user.getTotalPoints() >= 200) {
             row3.add("🚀 Продвинутые задания");
+        } else {
+            row3.add("🔒 Набери 200 очков");
         }
 
         if (user.getTotalPoints() >= 100) {
             row3.add("🏆 Лидерборд");
+        } else {
+            row3.add("🔒 Набери 100 очков");
         }
 
         keyboard.add(row1);
