@@ -4,6 +4,7 @@ package com.groviate.telegramcodereviewbot.service;
 import com.groviate.telegramcodereviewbot.config.TgBotConfig;
 import com.groviate.telegramcodereviewbot.entity.Level;
 import com.groviate.telegramcodereviewbot.factory.KeyboardFactory;
+import com.groviate.telegramcodereviewbot.repository.UserRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
@@ -28,18 +29,21 @@ public class TelegramBotService extends TelegramLongPollingBot {
     private final TgBotConfig config;
     private final KeyboardFactory keyboardFactory;
     private final UserProgressService userProgressService;
+    private final UserRepository userRepository;
+    private final LeaderboardService leaderboardService;
 
     private final Map<Long, String> userState = new ConcurrentHashMap<>();
-    private final Map<Long, Integer> selectedLevel = new ConcurrentHashMap<>();
     private final Map<Long, String> userLastTask = new ConcurrentHashMap<>();
     private final Map<Long, Level> userCurrentLevel = new ConcurrentHashMap<>();
 
     public TelegramBotService(TgBotConfig config, KeyboardFactory keyboardFactory,
-                              UserProgressService userProgressService) {
+                              UserProgressService userProgressService, UserRepository userRepository, LeaderboardService leaderboardService) {
         super(config.getBotToken());
         this.config = config;
         this.keyboardFactory = keyboardFactory;
         this.userProgressService = userProgressService;
+        this.userRepository = userRepository;
+        this.leaderboardService = leaderboardService;
     }
 
     @Override
@@ -121,7 +125,21 @@ public class TelegramBotService extends TelegramLongPollingBot {
             case "🚀 Первые шаги":
                 showFirstSteps(chatId);
                 break;
+                //обработка лидерборда и "продвинутые уровни"
+            case "🔒 Набери 100 очков":
+                sendMessage(chatId, "🤔 Ты глупи?\n Написано же: вначале набери 100 очков.",
+                        keyboardFactory.createMainMenuKeyboard(chatId));
+                break;
 
+            case "🔒 Набери 200 очков":
+                sendMessage(chatId, "🤔 Ты глупи?\n Написано же: вначале набери 200 очков.",
+                        keyboardFactory.createMainMenuKeyboard(chatId));
+                break;
+
+            case "🏆 Лидерборд":
+                sendMessage(chatId, leaderboardService.getFormattedLeaderboard(),
+                        keyboardFactory.createMainMenuKeyboard(chatId));
+                break;
             default:
                 sendMessage(chatId, "🤔 Я не понял запрос. Выбери вариант из клавиатуры.",
                         keyboardFactory.createMainMenuKeyboard(chatId));
@@ -248,7 +266,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
         userLastTask.remove(chatId);
 
         String response = String.format(
-                "%s *%s*\n\n" +
+                "%s %s\n\n" +
                         "📝 Задания уровня:\n\n" +
                         "✅ - выполнено\n" +
                         "⬜ - не выполнено\n\n" +
@@ -295,7 +313,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
     }
 
     /**
-     * Показать первые шаги
+     * Показать первые шаги (не работает нормально)
      */
     private void showFirstSteps(Long chatId) {
         userState.put(chatId, "first_steps");
@@ -480,52 +498,6 @@ public class TelegramBotService extends TelegramLongPollingBot {
     }
 
     /**
-     * Извлечь taskId из текста кнопки (улучшенная версия)
-     */
-//    private String extractTaskIdFromButton(String buttonText, Level level) {
-//        if (level == null) {
-//            return null;
-//        }
-//
-//        // Убираем эмодзи и лишний текст
-//        String cleanText = buttonText
-//                .replace("📝 ", "")
-//                .replace("✅ ", "")
-//                .replace("⏳ ", "")
-//                .replaceAll("\\s*\\(.*\\)", "")
-//                .trim();
-//
-//        // Для каждого уровня свои правила преобразования
-//        switch (level.getNumber()) {
-//            case 1: // Микрочелик
-//                switch (cleanText) {
-//                    case "1️⃣ Первое задание":
-//                        return "minibro_1";
-//                    case "2️⃣ Второе задание":
-//                        return "minibro_2";
-//                    case "3️⃣ Третье задание":
-//                        return "minibro_3";
-//                    case "4️⃣ Четвертое задание":
-//                        return "minibro_4";
-//                    default:
-//                        return null;
-//                }
-//            case 2: // Босс этого проекта
-//                switch (cleanText) {
-//                    case "📁 Архитектура проекта":
-//                        return "boss_1";
-//                    case "🔧 Code Review процесс":
-//                        return "boss_2";
-//                    default:
-//                        return null;
-//                }
-//            default:
-//                return null;
-//        }
-//    }
-
-
-    /**
      * Универсальный метод отправки сообщения с клавиатурой
      */
     private void sendMessage(Long chatId, String text, ReplyKeyboardMarkup keyboard) {
@@ -544,25 +516,6 @@ public class TelegramBotService extends TelegramLongPollingBot {
         } catch (TelegramApiException e) {
             System.out.println("❌ Ошибка отправки: " + e.getMessage());
         }
-    }
-
-    /**
-     * Извлечь taskId из текста кнопки (ПРОСТАЯ версия с использованием Level)
-     */
-    private String extractTaskIdFromButton(String buttonText, Level level) {
-        if (level == null) {
-            System.out.println("Уровень null при извлечении taskId");
-            return null;
-        }
-
-        System.out.println("Извлечение taskId из кнопки: \"" + buttonText +
-                "\" для уровня: " + level.getName());
-
-        // Используем новый метод Level
-        String taskId = level.getTaskIdByButtonText(buttonText);
-
-        System.out.println("Результат: " + (taskId != null ? taskId : "не найден"));
-        return taskId;
     }
 
     @Override

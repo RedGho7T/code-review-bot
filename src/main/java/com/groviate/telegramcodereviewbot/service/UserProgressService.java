@@ -37,7 +37,6 @@ public class UserProgressService {
                 .chatId(chatId)
                 .telegramUsername(username)
                 .firstName(firstName)
-                .lastName(lastName)
                 .currentLevel(1)
                 .maxUnlockedLevel(1)
                 .totalPoints(0)
@@ -171,9 +170,12 @@ public class UserProgressService {
     }
 
     /**
-     * Получить количество очков пользователя
+     * Получить топ-5 пользователей
+     * Т.к. кол-во очков ограничено сделано с учетом тайминга получения
+     * Например: Получивший 01.01.26 макс кол-во балов будет топ-1 до тех пор, пока кто-то после него не получит
+     * максимальное кол-во баллов
      */
-    public int getTotalPoints(Long chatId) {
+    public int getTopFiveUsers(Long chatId) {
         return userRepository.findByChatId(chatId)
                 .map(User::getTotalPoints)
                 .orElse(0);
