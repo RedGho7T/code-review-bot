@@ -315,7 +315,7 @@ public class DocumentIndexingService implements ApplicationRunner {
         String jsonPayload = objectMapper.writeValueAsString(payload);
 
         Request request = new Request.Builder()
-                .url(ragConfig.getUrl() + "/api/v1/collections/" + codingStandardsCollectionId + "/add")
+                .url(ragConfig.getUrl() + "/api/v1/collections/" + codingStandardsCollectionId + "/upsert")
                 .post(RequestBody.create(jsonPayload, JSON))
                 .build();
 
@@ -325,7 +325,7 @@ public class DocumentIndexingService implements ApplicationRunner {
                 log.error("Ошибка при добавлении chunks в ChromaDB: code={}, body={}",
                         response.code(),
                         body != null ? body.string() : "<empty>");
-                return;
+                throw new IOException("Chroma upsert failed: code=" + response.code());
             }
             log.debug("Добавлено {} chunks из документа {}", chunks.size(), documentName);
         }

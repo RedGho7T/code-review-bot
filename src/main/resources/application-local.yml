@@ -6,6 +6,7 @@ logging:
   level:
     root: INFO
     com.groviate.telegramcodereviewbot: DEBUG
+    com.groviate.telegramcodereviewbot.service.RagContextService: DEBUG
 
 code-review:
   dry-run: true

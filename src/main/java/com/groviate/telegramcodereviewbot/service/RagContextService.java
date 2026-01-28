@@ -79,6 +79,8 @@ public class RagContextService {
             float[] codeEmbedding = embeddingModel.embed(safeCode);
 
             List<RagDocument> relevantDocs = searchInChroma(codeEmbedding);
+            log.debug("RAG: найдено документов = {}", relevantDocs.size());
+
             if (relevantDocs.isEmpty()) {
                 log.debug("Релевантные стандарты не найдены");
                 return "";
@@ -115,8 +117,10 @@ public class RagContextService {
 
         try (Response response = httpClient.newCall(request).execute()) {
             if (!response.isSuccessful()) {
-                log.warn("Ошибка при поиске в ChromaDB: httpCode={}", response.code());
-                return List.of();
+                String errBody = response.body() != null ? response.body().string() : "<empty>";
+                log.warn("Chroma query failed: code={}, body={}", response.code(),
+                        errBody.length() > 500 ? errBody.substring(0, 500) : errBody);
+                throw new IOException("Chroma query failed: code=" + response.code());
             }
 
             ResponseBody body = response.body();
@@ -190,29 +194,139 @@ public class RagContextService {
     private List<RagDocument> parseChromaResults(JsonNode responseNode) {
         List<RagDocument> results = new ArrayList<>();
 
-        JsonNode ids = responseNode.path("ids").path(0);
-        JsonNode documents = responseNode.path("documents").path(0);
-        JsonNode distances = responseNode.path("distances").path(0);
-        JsonNode metadatas = responseNode.path("metadatas").path(0);
+        JsonNode ids = firstInnerArray(responseNode.path("ids"));
+        JsonNode documents = firstInnerArray(responseNode.path("documents"));
+        JsonNode distances = firstInnerArray(responseNode.path("distances"));
+        JsonNode metadatas = firstInnerArray(responseNode.path("metadatas"));
 
-        int count = Math.min(ids.size(), Math.min(documents.size(), distances.size()));
-        for (int i = 0; i < count; i++) {
-            double distance = distances.path(i).asDouble();
-            double similarity = 1 - distance;
+        logRawSizes(ids, documents, distances, metadatas);
 
-            if (similarity < ragConfig.getSimilarityThreshold()) {
-                continue;
-            }
-
-            RagDocument doc = new RagDocument();
-            doc.setId(ids.path(i).asText());
-            doc.setContent(documents.path(i).asText());
-            doc.setSource(metadatas.path(i).path("source").asText("unknown"));
-            doc.setSimilarity(similarity);
-
-            results.add(doc);
+        int count = ids.size();
+        if (count == 0) {
+            return List.of();
         }
 
+        double threshold = ragConfig.getSimilarityThreshold();
+        RagDocument bestDoc = null;
+
+        for (int i = 0; i < count; i++) {
+            RagDocument doc = buildRagDocument(i, ids, documents, distances, metadatas);
+
+            bestDoc = pickBest(bestDoc, doc);
+
+            if (shouldInclude(threshold, doc.getSimilarity())) {
+                results.add(doc);
+            }
+        }
+
+        return ensureNonEmptyResults(results, bestDoc, threshold);
+    }
+
+    private void logRawSizes(JsonNode ids, JsonNode documents, JsonNode distances, JsonNode metadatas) {
+        log.debug("RAG raw sizes: ids={}, docs={}, distances={}, metadatas={}",
+                ids.size(),
+                documents.size(),
+                distances.size(),
+                metadatas.size());
+    }
+
+    private RagDocument buildRagDocument(int i,
+                                         JsonNode ids,
+                                         JsonNode documents,
+                                         JsonNode distances,
+                                         JsonNode metadatas) {
+        String id = ids.path(i).asText();
+        String content = extractContent(documents, i);
+        double distance = extractDistance(distances, i);
+        double similarity = computeSimilarity(distance);
+        String source = extractSource(metadatas, i);
+
+        RagDocument doc = new RagDocument();
+        doc.setId(id);
+        doc.setContent(content);
+        doc.setSource(source);
+        doc.setSimilarity(similarity);
+
+        return doc;
+    }
+
+    /**
+     * Безопасно извлекает содержимое документа из массива {@code documents}.
+     *
+     * @param documents массив документов (может быть не массивом)
+     * @param i         индекс элемента
+     * @return текст документа или пустая строка, если значение отсутствует
+     */
+    private String extractContent(JsonNode documents, int i) {
+        return documents.isArray() ? documents.path(i).asText("") : "";
+    }
+
+    /**
+     * Безопасно извлекает distance из массива {@code distances}.
+     *
+     * @param distances массив расстояний (может быть не массивом)
+     * @param i         индекс элемента
+     * @return distance или {@link Double#NaN}, если значение отсутствует
+     */
+    private double extractDistance(JsonNode distances, int i) {
+        return distances.isArray() ? distances.path(i).asDouble(Double.NaN) : Double.NaN;
+    }
+
+    private String extractSource(JsonNode metadatas, int i) {
+        String source = "unknown";
+        if (metadatas.isArray() && metadatas.path(i).isObject()) {
+            source = metadatas.path(i).path("source").asText("unknown");
+        }
+        return source;
+    }
+
+    /**
+     * Выбирает лучший документ по similarity.
+     *
+     * @param bestDoc   текущий лучший документ (может быть null)
+     * @param candidate кандидат на лучший документ
+     * @return документ с максимальным similarity
+     */
+    private RagDocument pickBest(RagDocument bestDoc, RagDocument candidate) {
+        if (bestDoc == null) {
+            return candidate;
+        }
+        return candidate.getSimilarity() > bestDoc.getSimilarity() ? candidate : bestDoc;
+    }
+
+    /**
+     * Проверяет, должен ли документ попасть в финальную выдачу с учётом порога similarity.
+     * <p>
+     * Если {@code threshold <= 0}, фильтрация отключается и включаются все документы.
+     *
+     * @param threshold  порог similarity из конфигурации
+     * @param similarity similarity конкретного документа
+     * @return true если документ следует включить в результат
+     */
+    private boolean shouldInclude(double threshold, double similarity) {
+        // как было: threshold <= 0 — фильтр выключен
+        return threshold <= 0.0 || similarity >= threshold;
+    }
+
+    /**
+     * Гарантирует непустой результат поиска: если всё было отфильтровано по threshold,
+     * добавляет лучший документ (bestDoc) как fallback.
+     *
+     * @param results   итоговый список после фильтрации
+     * @param bestDoc   лучший кандидат по similarity (может быть null)
+     * @param threshold порог similarity (используется для логирования)
+     * @return список документов (может быть пустым, если кандидатов вообще не было)
+     */
+    private List<RagDocument> ensureNonEmptyResults(List<RagDocument> results,
+                                                    RagDocument bestDoc,
+                                                    double threshold) {
+        if (!results.isEmpty() || bestDoc == null) {
+            return results;
+        }
+
+        log.debug("RAG: all candidates below threshold={}, fallback to best similarity={}",
+                threshold, bestDoc.getSimilarity());
+        results.add(bestDoc);
         return results;
     }
 
@@ -388,11 +502,70 @@ public class RagContextService {
         return intPart + "." + (frac < 10 ? "0" : "") + frac;
     }
 
+    /**
+     * Безопасно формирует короткое сообщение об ошибке:
+     * <ul>
+     *   <li> не возвращает null</li>
+     *   <li> Если message отсутствует — возвращает имя класса</li>
+     *   <li> Ограничивает длину сообщения до 200 символов</li>
+     * </ul>
+     *
+     * @param t throwable (может быть null)
+     * @return безопасное сообщение для логов/исключений
+     */
     private static String safeMsg(Throwable t) {
         if (t == null) return "unknown";
         String m = t.getMessage();
         if (m == null) return t.getClass().getSimpleName();
         return (m.length() > 200) ? m.substring(0, 200) : m;
+    }
+
+    /**
+     * Возвращает первый внутренний массив из структуры ответа ChromaDB.
+     * <p>
+     * ChromaDB часто возвращает результаты в виде вложенных массивов {@code [[...]]} (один query),
+     * но иногда может быть уже плоский массив {@code [...]}. Метод нормализует оба случая.
+     *
+     * @param node узел JSON (может быть null/missing)
+     * @return первый внутренний массив, плоский массив как есть
+     */
+    private static JsonNode firstInnerArray(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return com.fasterxml.jackson.databind.node.MissingNode.getInstance();
+        }
+        // Если пришло [[...]] → вернём первый внутренний список
+        if (node.isArray() && !node.isEmpty() && node.path(0).isArray()) {
+            return node.path(0);
+        }
+        // Если пришло уже [...] → вернём как есть
+        return node;
+    }
+
+    /**
+     * Вычисляет similarity (0..1) по distance, возвращаемому ChromaDB.
+     * <p>
+     * Поддерживает два типовых случая:
+     * <ul>
+     *   <li>cosine distance в диапазоне 0..2 → similarity = 1 - distance</li>
+     *   <li>прочие расстояния (например, L2) → similarity = 1 / (1 + distance)</li>
+     * </ul>
+     * Результат ограничивается диапазоном [0..1]. NaN/Infinity трактуются как 0.
+     *
+     * @param distance distance из ChromaDB
+     * @return similarity в диапазоне 0..1
+     */
+    private static double computeSimilarity(double distance) {
+        if (Double.isNaN(distance) || Double.isInfinite(distance)) {
+            return 0.0;
+        }
+
+        if (distance >= 0.0 && distance <= 2.0) {
+            double sim = 1.0 - distance;
+            return Math.clamp(sim, 0.0, 1.0);
+        }
+
+        double sim = 1.0 / (1.0 + Math.max(0.0, distance));
+        return Math.clamp(sim, 0.0, 1.0);
     }
 
     /**

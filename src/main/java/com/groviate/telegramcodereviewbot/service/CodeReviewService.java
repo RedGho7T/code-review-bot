@@ -5,8 +5,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.groviate.telegramcodereviewbot.config.CodeReviewProperties;
 import com.groviate.telegramcodereviewbot.exception.AiNonRetryableException;
 import com.groviate.telegramcodereviewbot.model.CodeReviewResult;
+import com.groviate.telegramcodereviewbot.model.CodeSuggestion;
 import com.groviate.telegramcodereviewbot.model.MergeRequest;
 import com.groviate.telegramcodereviewbot.model.MergeRequestDiff;
+import com.groviate.telegramcodereviewbot.model.ReviewCategory;
+import com.groviate.telegramcodereviewbot.model.SuggestionSeverity;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
@@ -130,17 +133,7 @@ public class CodeReviewService {
             }
 
             CodeReviewResult result = objectMapper.readValue(normalized, CodeReviewResult.class);
-
-            if (result.getSuggestions() == null) {
-                result.setSuggestions(List.of());
-            }
-
-            // Если AI не прислал metadata — добавим наше
-            if (result.getMetadata() == null || result.getMetadata().isBlank()) {
-                result.setMetadata(buildMetadata(diffs));
-            }
-
-            return result;
+            return normalizeAiResult(result, diffs);
 
         } catch (Exception e) {
             log.error("Ошибка при парсинге ответа AI: {}", e.getMessage(), e);
@@ -413,5 +406,198 @@ public class CodeReviewService {
         String m = t.getMessage();
         if (m == null) return t.getClass().getSimpleName();
         return (m.length() > 300) ? m.substring(0, 300) : m;
+    }
+
+    /**
+     * Нормализует результат, полученный от AI, чтобы гарантировать корректные значения полей:
+     * <ul>
+     *   <li> Score приводится к диапазону 0..10</li>
+     *   <li> Summary и metadata не остаются null</li>
+     *   <li> Suggestions очищаются от некорректных/пустых элементов и заполняются дефолтами</li>
+     * </ul>
+     *
+     * @param result результат, распарсенный из ответа AI
+     * @param diffs  список изменённых файлов (используется для metadata)
+     * @return нормализованный {@link CodeReviewResult}
+     */
+    private CodeReviewResult normalizeAiResult(CodeReviewResult result, List<MergeRequestDiff> diffs) {
+
+        // 0) Если почему-то Jackson вернул null (редко, но лучше подстраховаться)
+        if (result == null) {
+            return createEmptyReview("AI вернул пустой результат.", diffs);
+        }
+
+        result.setScore(normalizeScore(result.getScore()));
+        result.setSummary(normalizeSummary(result.getSummary()));
+        ensureMetadata(result, diffs);
+        result.setSuggestions(sanitizeSuggestions(result.getSuggestions()));
+
+        return result;
+    }
+
+    /**
+     * Нормализует оценку ревью в диапазон 0..10.
+     *
+     * @param score оценка от AI (может быть null)
+     * @return значение в диапазоне 0..10
+     */
+    private int normalizeScore(Integer score) {
+        int safeScore = (score == null) ? 0 : score;
+        if (safeScore < 0) {
+            return 0;
+        }
+        return Math.min(safeScore, 10);
+    }
+
+    /**
+     * Нормализует summary: не допускает null.
+     *
+     * @param summary текст итога от AI (может быть null)
+     * @return непустая ссылка на строку (может быть пустой строкой)
+     */
+    private String normalizeSummary(String summary) {
+        return (summary == null) ? "" : summary;
+    }
+
+    /**
+     * Гарантирует, что {@link CodeReviewResult#getMetadata()} заполнено.
+     * <p>
+     * Если metadata отсутствует или пустое — формирует его на основе diffs.
+     *
+     * @param result результат ревью
+     * @param diffs  список изменённых файлов
+     */
+    private void ensureMetadata(CodeReviewResult result, List<MergeRequestDiff> diffs) {
+        if (result.getMetadata() == null || result.getMetadata().isBlank()) {
+            result.setMetadata(buildMetadata(diffs));
+        }
+    }
+
+    /**
+     * Нормализует список suggestions:
+     * <ul>
+     *   <li> Если список null/пустой — возвращает пустой список</li>
+     *   <li> Фильтрует null-элементы и некорректные suggestions</li>
+     *   <li> Приводит элементы к консистентному виду через {@link #sanitizeSuggestion(CodeSuggestion)}</li>
+     * </ul>
+     *
+     * @param suggestions список рекомендаций от AI (может быть null)
+     * @return очищенный список suggestions (никогда не null)
+     */
+    private List<CodeSuggestion> sanitizeSuggestions(List<CodeSuggestion> suggestions) {
+
+        // Полностью повторяем прежнюю логику:
+        // null/empty -> List.of()
+        if (suggestions == null || suggestions.isEmpty()) {
+            return List.of();
+        }
+
+        List<CodeSuggestion> sanitized = new java.util.ArrayList<>();
+
+        for (CodeSuggestion s : suggestions) {
+            CodeSuggestion sanitizedSuggestion = sanitizeSuggestion(s);
+            if (sanitizedSuggestion != null) {
+                sanitized.add(sanitizedSuggestion);
+            }
+        }
+
+        return sanitized;
+    }
+
+    /**
+     * Нормализует одну рекомендацию AI:
+     * <ul>
+     *   <li> Подставляет дефолтные значения category/severity при отсутствии</li>
+     *   <li> Trim'ит message и suggestionFix, пустые строки превращает в null</li>
+     *   <li> Нормализует имя файла и номер строки</li>
+     * </ul>
+     * Если после нормализации нет ни message, ни suggestionFix — рекомендация отбрасывается.
+     *
+     * @param s рекомендация от AI (может быть null)
+     * @return нормализованная рекомендация или null, если её следует отбросить
+     */
+    private CodeSuggestion sanitizeSuggestion(CodeSuggestion s) {
+        if (s == null) {
+            return null;
+        }
+
+        // category: если нет — пусть будет OTHER
+        if (s.getCategory() == null) {
+            s.setCategory(ReviewCategory.OTHER);
+        }
+
+        // severity: если нет — INFO
+        if (s.getSeverity() == null) {
+            s.setSeverity(SuggestionSeverity.INFO);
+        }
+
+        // message: trim + фильтрация пустых
+        s.setMessage(trimToNull(s.getMessage()));
+
+        // suggestionFix: trim (может быть null)
+        s.setSuggestionFix(trimToNull(s.getSuggestionFix()));
+
+        // fileName: лёгкая нормализация пути (на случай backslashes)
+        normalizeFileName(s);
+
+        // lineNumber: если <=0 — делаем null
+        normalizeLineNumber(s);
+
+        // Если message пустой И при этом нет suggestedFix — выбрасываем
+        return hasAnyContent(s) ? s : null;
+    }
+
+    /**
+     * Нормализует имя файла: trim и замена обратных слэшей на прямые.
+     *
+     * @param s рекомендация, содержащая имя файла
+     */
+    private void normalizeFileName(CodeSuggestion s) {
+        if (s.getFileName() != null) {
+            s.setFileName(s.getFileName().trim().replace('\\', '/'));
+        }
+    }
+
+    /**
+     * Нормализует номер строки: значения {@code <= 0} считаются некорректными и превращаются в null.
+     *
+     * @param s рекомендация, содержащая номер строки
+     */
+    private void normalizeLineNumber(CodeSuggestion s) {
+        if (s.getLineNumber() != null && s.getLineNumber() <= 0) {
+            s.setLineNumber(null);
+        }
+    }
+
+    /**
+     * Проверяет, содержит ли рекомендация полезный контент (message или suggestionFix).
+     *
+     * @param s рекомендация
+     * @return true если заполнено хотя бы одно из полей message/suggestionFix
+     */
+    private boolean hasAnyContent(CodeSuggestion s) {
+        return isNotBlank(s.getMessage()) || isNotBlank(s.getSuggestionFix());
+    }
+
+    /**
+     * Проверяет строку на непустоту (not blank) с защитой от null.
+     *
+     * @param value строка (может быть null)
+     * @return true если строка не null и содержит непустые символы
+     */
+    private boolean isNotBlank(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    /**
+     * Обрезает пробелы по краям и превращает пустую строку в null.
+     *
+     * @param value исходная строка (может быть null)
+     * @return trimmed-строка или null, если результат пустой/blank
+     */
+    private static String trimToNull(String value) {
+        if (value == null) return null;
+        String t = value.trim();
+        return t.isBlank() ? null : t;
     }
 }
