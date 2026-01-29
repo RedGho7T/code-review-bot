@@ -1,183 +1,237 @@
 package com.groviate.telegramcodereviewbot.service;
 
+import com.groviate.telegramcodereviewbot.dto.TaskCompletionResult;
 import com.groviate.telegramcodereviewbot.entity.Level;
 import com.groviate.telegramcodereviewbot.entity.User;
+import com.groviate.telegramcodereviewbot.entity.UserScore;
+import com.groviate.telegramcodereviewbot.repository.CompletedTaskRepository;
 import com.groviate.telegramcodereviewbot.repository.UserRepository;
-import lombok.AllArgsConstructor;
-import lombok.Getter;
+import com.groviate.telegramcodereviewbot.repository.UserScoreRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
-import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class UserProgressService {
 
+    private static final int ADMIN_BONUS_POINTS = 1000;
+
     private final UserRepository userRepository;
+    private final UserScoreRepository userScoreRepository;
+    private final CompletedTaskRepository completedTaskRepository;
+
+    @Transactional
+    public User getOrCreateUser(Long chatId, String username, String firstName) {
+        return userRepository.findByChatId(chatId)
+                .map(existing -> {
+                    // Обновляем данные, если изменились (Telegram иногда меняет username)
+                    if (username != null && !username.equals(existing.getTelegramUsername())) {
+                        existing.setTelegramUsername(username);
+                    }
+                    if (firstName != null && !firstName.equals(existing.getFirstName())) {
+                        existing.setFirstName(firstName);
+                    }
+
+                    existing.setLastActivityAt(LocalDateTime.now());
+                    return userRepository.save(existing);
+                })
+                .orElseGet(() -> {
+                    User created = User.builder()
+                            .chatId(chatId)
+                            .telegramUsername(username)
+                            .firstName(firstName)
+                            .currentLevel(1)
+                            .maxUnlockedLevel(1)
+                            .totalPoints(0)
+                            .createdAt(LocalDateTime.now())
+                            .lastActivityAt(LocalDateTime.now())
+                            .build();
+
+                    log.info("Создан новый пользователь: chatId={}, username={}, firstName={}", chatId, username, firstName);
+                    return userRepository.save(created);
+                });
+    }
 
     /**
-     * Получить пользователя 
+     * Проверить доступность уровня.
+     * Оптимизация: используем запрос репозитория, не грузим сущность целиком.
+     */
+    @Transactional(readOnly = true)
+    public boolean isLevelAccessible(Long chatId, int levelNumber) {
+        return userRepository.isLevelAccessible(chatId, levelNumber);
+    }
+
+    /**
+     * Проверить выполнение задания.
+     * Оптимизация: проверяем напрямую через CompletedTaskRepository (не грузим User + EAGER коллекцию).
+     */
+    @Transactional(readOnly = true)
+    public boolean isTaskCompleted(Long chatId, String taskId) {
+        return completedTaskRepository.findByChatIdAndTaskId(chatId, taskId).isPresent();
+    }
+
+    /**
+     * Полный сброс прогресса.
+     * Ключевой момент:
+     * 1) Чистим БД (scores/tasks)
+     * 2) Чистим коллекции в сущности (иначе JPA может попытаться пересоздать удаленные записи)
+     * 3) Сбрасываем поля прогресса
      */
     @Transactional
-    public User getOrCreateUser(Long chatId, String username, String firstName, String lastName) {
-        Optional<User> existingUser = userRepository.findByChatId(chatId);
+    public User resetUser(Long chatId) {
+        User user = getUserOrThrow(chatId);
 
-        if (existingUser.isPresent()) {
-            User user = existingUser.get();
-            user.setLastActivityAt(LocalDateTime.now());
-            return userRepository.save(user);
+        // 1) удаляем историю и задачи в БД
+        completedTaskRepository.deleteByUserId(user.getId());
+        userScoreRepository.deleteByUserId(user.getId());
+
+        // 2) чистим in-memory коллекции, чтобы не было “воскрешения” через cascade
+        if (user.getCompletedTasks() != null) {
+            user.getCompletedTasks().clear();
+        }
+        if (user.getScores() != null) {
+            user.getScores().clear();
         }
 
-        User newUser = User.builder()
-                .chatId(chatId)
-                .telegramUsername(username)
-                .firstName(firstName)
-                .currentLevel(1)
-                .maxUnlockedLevel(1)
-                .totalPoints(0)
-                .createdAt(LocalDateTime.now())
-                .lastActivityAt(LocalDateTime.now())
-                .build();
+        // 3) сброс прогресса
+        user.setCurrentLevel(1);
+        user.setMaxUnlockedLevel(1);
+        user.setTotalPoints(0);
+        user.setLastActivityAt(LocalDateTime.now());
 
-        log.info("Создан новый пользователь: {}", newUser);
-        return userRepository.save(newUser);
+        // (не обязательно) маркер “reset” в историю, 0 очков, на рейтинг не влияет
+        user.getScores().add(UserScore.builder()
+                .user(user)
+                .points(0)
+                .sourceType("reset")
+                .sourceId("manual")
+                .build());
+
+        log.info("Progress reset: chatId={}, userId={}", chatId, user.getId());
+        return userRepository.save(user);
     }
 
     /**
-     * Проверить доступность уровня
+     * Админское начисление очков (+1000).
+     * Делаем через добавление в user.scores + сохранение user (cascade сохранит score).
      */
-    public boolean isLevelAccessible(Long chatId, int levelNumber) {
-        return userRepository.findByChatId(chatId)
-                .map(user -> user.isLevelUnlocked(levelNumber))
-                .orElse(false);
+    @Transactional
+    public User upScore(Long chatId) {
+        User user = getUserOrThrow(chatId);
+
+        user.getScores().add(UserScore.builder()
+                .user(user)
+                .points(ADMIN_BONUS_POINTS)
+                .sourceType("admin_bonus")
+                .sourceId("upscore")
+                .build());
+
+        user.setTotalPoints(user.getTotalPoints() + ADMIN_BONUS_POINTS);
+        user.setLastActivityAt(LocalDateTime.now());
+
+        log.info("Admin bonus: chatId={}, userId={}, bonus={}", chatId, user.getId(), ADMIN_BONUS_POINTS);
+        return userRepository.save(user);
     }
 
     /**
-     * Получить текущий уровень пользователя
-     */
-    public Level getCurrentLevel(Long chatId) {
-        return userRepository.findByChatId(chatId)
-                .map(user -> Level.getByNumber(user.getCurrentLevel()))
-                .orElse(Level.MINIBRO);
-    }
-
-    /**
-     * Проверить выполнение задания
-     */
-    public boolean isTaskCompleted(Long chatId, String taskId) {
-        return userRepository.findByChatId(chatId)
-                .map(user -> user.hasCompletedTask(taskId))
-                .orElse(false);
-    }
-
-    /**
-     * Выполнить задание
+     * Выполнить задание.
+     * Возвращаем DTO (вынесено отдельно), без возврата JPA User наружу.
      */
     @Transactional
     public TaskCompletionResult completeTask(Long chatId, String taskId) {
-        Optional<User> userOpt = userRepository.findByChatId(chatId);
-        if (userOpt.isEmpty()) {
+        User user = userRepository.findByChatId(chatId).orElse(null);
+        if (user == null) {
             return TaskCompletionResult.error("Пользователь не найден");
         }
 
-        User user = userOpt.get();
         Level currentLevel = Level.getByNumber(user.getCurrentLevel());
-        Level.Task task = currentLevel.getTaskById(taskId);
+        if (currentLevel == null) {
+            return TaskCompletionResult.error("Некорректный уровень пользователя");
+        }
 
+        Level.Task task = currentLevel.getTaskById(taskId);
         if (task == null) {
             return TaskCompletionResult.error("Задание не найдено на текущем уровне");
         }
 
-        if (user.hasCompletedTask(taskId)) {
+        // Быстрая проверка через БД (не через EAGER коллекцию)
+        if (isTaskCompleted(chatId, taskId)) {
             return TaskCompletionResult.error("Задание уже выполнено");
         }
 
-        // Отмечаем задание как выполненное
-        user.markTaskCompleted(taskId, task.getPoints(), task.getName());
-        userRepository.save(user);
+        // 1) отмечаем задачу (внутри User создастся CompletedTask и UserScore, totalPoints увеличится)
+        user.markTaskCompleted(taskId, task.points(), task.name());
 
-        // Проверяем, можно ли разблокировать следующий уровень
+        // 2) проверяем unlock уровня
         boolean levelUnlocked = false;
+        Integer newLevelNumber = null;
+
         if (user.canUnlockNextLevel()) {
             user.unlockNextLevel();
-            userRepository.save(user);
             levelUnlocked = true;
+            newLevelNumber = user.getCurrentLevel();
         }
 
-        return TaskCompletionResult.success(task, levelUnlocked, user);
+        // 3) сохраняем один раз
+        userRepository.save(user);
+
+        return TaskCompletionResult.success(task, levelUnlocked, newLevelNumber);
     }
 
     /**
-     * Получить статистику пользователя
+     * Статистика пользователя.
+     * Sonar: заменили конкатенацию на text block.
      */
+    @Transactional(readOnly = true)
     public String getUserStats(Long chatId) {
-        return userRepository.findByChatId(chatId).map(user -> {
-            Level currentLevel = Level.getByNumber(user.getCurrentLevel());
-            long completedTasksInLevel = currentLevel.getTasks().stream()
-                    .filter(task -> user.hasCompletedTask(task.getId()))
-                    .count();
-
-            return String.format(
-                    "🏆 Твоя статистика:\n\n" +
-                            "📊 Уровень: %d/%d\n" +
-                            "🎯 Текущий: %s %s\n" +
-                            "✅ Заданий выполнено: %d/%d\n" +
-                            "⭐ Очки: %d\n" +
-                            "🔓 Доступно уровней: %d\n\n" +
-                            "💡 Следующий уровень: %s",
-                    user.getCurrentLevel(), Level.values().length,
-                    currentLevel.getEmoji(), currentLevel.getName(),
-                    completedTasksInLevel, currentLevel.getTasks().size(),
-                    user.getTotalPoints(),
-                    user.getMaxUnlockedLevel(),
-                    user.canUnlockNextLevel() ? "Доступен!" : currentLevel.getUnlockCondition()
-            );
-        }).orElse("❌ Пользователь не найден");
-    }
-
-    /**
-     * Результат выполнения задания
-     */
-    @Getter
-    @AllArgsConstructor
-    public static class TaskCompletionResult {
-        private final boolean success;
-        private final String message;
-        private final Level.Task task;
-        private final boolean levelUnlocked;
-        private final User user;
-
-        public static TaskCompletionResult success(Level.Task task, boolean levelUnlocked, User user) {
-            String message = String.format(
-                    "✅ Задание выполнено!\n\n" +
-                            "🎯 %s\n" +
-                            "⭐ +%d очков\n\n" +
-                            "%s",
-                    task.getName(), task.getPoints(),
-                    levelUnlocked ? "🎉 Новый уровень разблокирован!" : ""
-            );
-            return new TaskCompletionResult(true, message, task, levelUnlocked, user);
-        }
-
-        public static TaskCompletionResult error(String errorMessage) {
-            return new TaskCompletionResult(false, "❌ " + errorMessage, null, false, null);
-        }
-    }
-
-    /**
-     * Получить топ-5 пользователей
-     * Т.к. кол-во очков ограничено сделано с учетом тайминга получения
-     * Например: Получивший 01.01.26 макс кол-во балов будет топ-1 до тех пор, пока кто-то после него не получит
-     * максимальное кол-во баллов
-     */
-    public int getTopFiveUsers(Long chatId) {
         return userRepository.findByChatId(chatId)
-                .map(User::getTotalPoints)
-                .orElse(0);
+                .map(user -> {
+                    Level currentLevel = Level.getByNumber(user.getCurrentLevel());
+                    if (currentLevel == null) {
+                        return "❌ Некорректный уровень пользователя";
+                    }
+
+                    long completedTasksInLevel = currentLevel.getTasks().stream()
+                            .filter(task -> isTaskCompleted(chatId, task.id()))
+                            .count();
+
+                    return String.format("""
+                            🏆 Твоя статистика:
+
+                            📊 Уровень: %d/%d
+                            🎯 Текущий: %s %s
+                            ✅ Заданий выполнено: %d/%d
+                            ⭐ Очки: %d
+                            🔓 Доступно уровней: %d
+
+                            💡 Следующий уровень: %s
+                            """,
+                            user.getCurrentLevel(),
+                            Level.values().length,
+                            currentLevel.getEmoji(),
+                            currentLevel.getName(),
+                            completedTasksInLevel,
+                            currentLevel.getTasks().size(),
+                            user.getTotalPoints(),
+                            user.getMaxUnlockedLevel(),
+                            user.canUnlockNextLevel() ? "Доступен!" : currentLevel.getUnlockCondition()
+                    );
+                })
+                .orElse("❌ Пользователь не найден");
+    }
+
+    private User getUserOrThrow(Long chatId) {
+        return userRepository.findByChatId(chatId)
+                .orElseThrow(() -> new IllegalArgumentException("Пользователь не найден: chatId=" + chatId));
+    }
+
+    @Transactional(readOnly = true)
+    public int getUserTotalPoints(Long chatId) {
+        return userRepository.findByChatId(chatId).map(User::getTotalPoints).orElse(0);
     }
 }

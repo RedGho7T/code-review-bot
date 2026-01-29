@@ -1,10 +1,9 @@
 package com.groviate.telegramcodereviewbot.service;
 
-
+import org.springframework.beans.factory.ObjectProvider;
 import com.groviate.telegramcodereviewbot.dto.LeaderboardEntry;
 import com.groviate.telegramcodereviewbot.repository.UserScoreRepository;
 import lombok.RequiredArgsConstructor;
-import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -17,6 +16,7 @@ import java.util.List;
 public class LeaderboardService {
 
     private final UserScoreRepository userScoreRepository;
+    private final ObjectProvider<LeaderboardService> self;
 
     /**
      * Лидерборд с учетом свежих очков (за последние 24 часа)
@@ -33,7 +33,7 @@ public class LeaderboardService {
      */
     @Transactional(readOnly = true)
     public String getFormattedLeaderboard() {
-        List<LeaderboardEntry> entries = getTop5WeightedLeaderboard();
+        List<LeaderboardEntry> entries = self.getObject().getTop5WeightedLeaderboard();
         return formatLeaderboardAsString(entries);
     }
 

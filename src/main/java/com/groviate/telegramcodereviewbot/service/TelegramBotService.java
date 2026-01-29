@@ -1,362 +1,327 @@
 package com.groviate.telegramcodereviewbot.service;
 
-
-import com.groviate.telegramcodereviewbot.config.TgBotConfig;
+import com.groviate.telegramcodereviewbot.config.TelegramProperties;
+import com.groviate.telegramcodereviewbot.dto.TaskCompletionResult;
 import com.groviate.telegramcodereviewbot.entity.Level;
 import com.groviate.telegramcodereviewbot.factory.KeyboardFactory;
-import com.groviate.telegramcodereviewbot.repository.UserRepository;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.Lazy;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import org.telegram.telegrambots.bots.TelegramLongPollingBot;
+import org.telegram.telegrambots.longpolling.interfaces.LongPollingUpdateConsumer;
+import org.telegram.telegrambots.longpolling.starter.SpringLongPollingBot;
+import org.telegram.telegrambots.longpolling.util.LongPollingSingleThreadUpdateConsumer;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
-import org.telegram.telegrambots.meta.api.objects.Message;
 import org.telegram.telegrambots.meta.api.objects.Update;
-import org.telegram.telegrambots.meta.api.objects.User;
-import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboardMarkup;
+import org.telegram.telegrambots.meta.api.objects.message.Message;
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboard;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
+import org.telegram.telegrambots.meta.generics.TelegramClient;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+@Slf4j
 @Service
-public class TelegramBotService extends TelegramLongPollingBot {
+@RequiredArgsConstructor
+public class TelegramBotService implements SpringLongPollingBot, LongPollingSingleThreadUpdateConsumer {
 
-    @Lazy
-    @Autowired
-    private BroadcastService broadcastService;
+    private static final String PARSE_MODE_MARKDOWN = "Markdown";
 
-    private final TgBotConfig config;
+    private static final String STATE_SELECTING_LEVEL = "selecting_level";
+    private static final String STATE_VIEWING_TASK = "viewing_task";
+    private static final String STATE_FIRST_STEPS = "first_steps";
+    private static final String STATE_VIEWING_LEVEL_PREFIX = "viewing_level_";
+
+    private static final String BTN_MAIN_MENU = "Главное меню";
+    private static final String BTN_CHOOSE_LEVEL = "🎯 Выбрать уровень";
+    private static final String BTN_STATS = "📊 Моя статистика";
+    private static final String BTN_ABOUT = "ℹ️ О проекте";
+    private static final String BTN_FIRST_STEPS = "🚀 Первые шаги";
+
+    private static final String NAV_BACK_MENU = "⬅️ Главное меню";
+    private static final String NAV_BACK_LEVELS = "⬅️ Назад к уровням";
+    private static final String NAV_BACK_TASKS = "⬅️ Назад к задачам";
+    private static final String NAV_BACK_INTO_MENU = "⬅️ Назад в меню";
+
+    private static final String BTN_TASK_DONE = "✅ Я выполнил это задание!";
+
+    private final TelegramClient telegramClient;
+    private final TelegramProperties telegramProperties;
     private final KeyboardFactory keyboardFactory;
     private final UserProgressService userProgressService;
-    private final UserRepository userRepository;
+    private final BroadcastService broadcastService;
     private final LeaderboardService leaderboardService;
+    private final TaskDescriptionService taskDescriptionService;
 
     private final Map<Long, String> userState = new ConcurrentHashMap<>();
     private final Map<Long, String> userLastTask = new ConcurrentHashMap<>();
     private final Map<Long, Level> userCurrentLevel = new ConcurrentHashMap<>();
 
-    public TelegramBotService(TgBotConfig config, KeyboardFactory keyboardFactory,
-                              UserProgressService userProgressService, UserRepository userRepository, LeaderboardService leaderboardService) {
-        super(config.getBotToken());
-        this.config = config;
-        this.keyboardFactory = keyboardFactory;
-        this.userProgressService = userProgressService;
-        this.userRepository = userRepository;
-        this.leaderboardService = leaderboardService;
+
+    @Override
+    public String getBotToken() {
+        return telegramProperties.getBotToken();
     }
 
     @Override
-    public void onUpdateReceived(Update update) {
-        if (update.hasMessage() && update.getMessage().hasText()) {
-            Message message = update.getMessage();
-            Long chatId = message.getChatId();
-            String text = message.getText();
-            User user = message.getFrom();
+    public LongPollingUpdateConsumer getUpdatesConsumer() {
+        return this;
+    }
 
-            String username = user.getUserName() != null ? "@" + user.getUserName() : "без юзернейма";
+    @Override
+    public void consume(Update update) {
+        if (!update.hasMessage() || !update.getMessage().hasText()) {
+            return;
+        }
 
-            System.out.println("Получено сообщение от " + username + ": " + text);
+        Message message = update.getMessage();
+        Long chatId = message.getChatId();
+        String text = message.getText();
 
-            // Получаем или создаем пользователя
+        var chat = message.getChat();
+
+        String chatType = chat != null ? chat.getType() : "unknown";
+        String chatTitle = chat != null ? chat.getTitle() : null;
+        String chatUsername = chat != null ? chat.getUserName() : null;
+
+        String fromUsername = message.getFrom() != null ? message.getFrom().getUserName() : null;
+        String fromFirstName = message.getFrom() != null ? message.getFrom().getFirstName() : null;
+
+        // Для логирования ID группы
+        log.info(
+                "TG update: " +
+                        "chatId={}, chatType={}, chatTitle='{}', chatUsername='@{}', " +
+                        "from='@{}'({}), messageId={}, text='{}'",
+                chatId,
+                chatType,
+                chatTitle,
+                chatUsername,
+                fromUsername,
+                fromFirstName,
+                message.getMessageId(),
+                text
+        );
+
+        // Telegram user может отсутствовать (редко), но guard всё равно полезен
+        if (message.getFrom() != null) {
             userProgressService.getOrCreateUser(
                     chatId,
-                    user.getUserName(),
-                    user.getFirstName(),
-                    user.getLastName()
+                    message.getFrom().getUserName(),
+                    message.getFrom().getFirstName()
             );
-
-            // Обрабатываем сообщение
-            handleUserMessage(text, chatId);
         }
+
+        handleUserMessage(text, chatId);
     }
 
     private void handleUserMessage(String messageText, Long chatId) {
-        // Проверяем, начинается ли сообщение с команды
         if (messageText.startsWith("/")) {
             handleCommand(messageText, chatId);
-            return; // После обработки команды выходим
+            return;
+        }
+
+        // Глобальные кнопки/навигация — обрабатываем раньше любых state
+        if (isGlobalOrNavigationButton(messageText)) {
+            handleGlobalOrNavigationButton(messageText, chatId);
+            return;
         }
 
         String state = userState.get(chatId);
 
-        // ВСЕГДА сначала проверяем навигационные кнопки
-        if (isNavigationButton(messageText)) {
-            handleNavigationButton(messageText, chatId, userState.get(chatId));
-            return;
-        }
-
-        // Если пользователь в состоянии выбора уровня
-        if ("selecting_level".equals(state)) {
+        if (STATE_SELECTING_LEVEL.equals(state)) {
             handleLevelSelection(messageText, chatId);
             return;
         }
 
-        // Если пользователь просматривает конкретный уровень
-        if (state != null && state.startsWith("viewing_level_")) {
+        if (state != null && state.startsWith(STATE_VIEWING_LEVEL_PREFIX)) {
             handleTaskInLevel(messageText, chatId, state);
             return;
         }
 
-        // Если пользователь просматривает задачу
-        if ("viewing_task".equals(state)) {
+        if (STATE_VIEWING_TASK.equals(state)) {
             handleTaskAction(messageText, chatId);
             return;
         }
 
-        // Обработка основных команд меню
+        // Основное меню
         switch (messageText) {
-            case "Главное меню":
-                sendMainMenu(chatId);
-                break;
-
-            case "🎯 Выбрать уровень":
-                showLevelSelection(chatId);
-                break;
-
-            case "📊 Моя статистика":
-                showStatistics(chatId);
-                break;
-
-            case "ℹ️ О проекте":
-                showProjectInfo(chatId);
-                break;
-
-            case "🚀 Первые шаги":
-                showFirstSteps(chatId);
-                break;
-                //обработка лидерборда и "продвинутые уровни"
-            case "🔒 Набери 100 очков":
-                sendMessage(chatId, "🤔 Ты глупи?\n Написано же: вначале набери 100 очков.",
-                        keyboardFactory.createMainMenuKeyboard(chatId));
-                break;
-
-            case "🔒 Набери 200 очков":
-                sendMessage(chatId, "🤔 Ты глупи?\n Написано же: вначале набери 200 очков.",
-                        keyboardFactory.createMainMenuKeyboard(chatId));
-                break;
-
-            case "🏆 Лидерборд":
-                sendMessage(chatId, leaderboardService.getFormattedLeaderboard(),
-                        keyboardFactory.createMainMenuKeyboard(chatId));
-                break;
-            default:
-                sendMessage(chatId, "🤔 Я не понял запрос. Выбери вариант из клавиатуры.",
-                        keyboardFactory.createMainMenuKeyboard(chatId));
+            case BTN_MAIN_MENU -> sendMainMenu(chatId);
+            case BTN_ABOUT -> showProjectInfo(chatId);
+            case BTN_FIRST_STEPS -> showFirstSteps(chatId);
+            case "🏆 Лидерборд" -> sendMessage(chatId, leaderboardService.getFormattedLeaderboard(),
+                    keyboardFactory.createMainMenuKeyboard(chatId));
+            default -> sendMessage(chatId, "🤔 Я не понял запрос. Выбери вариант из клавиатуры.",
+                    keyboardFactory.createMainMenuKeyboard(chatId));
         }
     }
 
-    /**
-     * Обработка текстовых команд (ИСПРАВЛЕННАЯ)
-     */
     private void handleCommand(String command, Long chatId) {
-        System.out.println("⌨️ Обработка команды: " + command);
+        log.debug("Обработка команды: chatId={}, command={}", chatId, command);
 
         switch (command.toLowerCase()) {
-            case "/start":
-                // ПОДПИСЫВАЕМ ПОЛЬЗОВАТЕЛЯ НА РАССЫЛКУ ПРИ СТАРТЕ
+            case "/start" -> {
                 if (!broadcastService.isSubscribed(chatId)) {
                     broadcastService.subscribeUser(chatId);
-                    System.out.println("✅ Пользователь " + chatId + " подписан на рассылку");
+                    log.info("Пользователь подписан на рассылку: chatId={}", chatId);
                 }
                 sendMainMenu(chatId);
-                break;
-
-            case "/help":
-                String helpText = "ℹ️ Доступные команды:\n\n" +
-                        "Основные:\n" +
-                        "• /start - начать работу\n" +
-                        "• /help - эта справка\n\n" +
-                        "Кнопки меню:\n" +
-                        "• 🚀 Первые шаги - гайд по онбордингу\n" +
-                        "• 🎯 Выбрать уровень - путь становления Senior'ом\n" +
-                        "• 📊 Моя статистика - твои достижения\n" +
-                        "• ℹ️ О проекте - информация\n\n" +
-                        "💡 Совет: Просто нажимай кнопки в меню!";
+            }
+            case "/help" -> {
+                String helpText = """
+                        ℹ️ Доступные команды:
+                        
+                        Основные:
+                        • /start - начать работу
+                        • /help - эта справка
+                        • /menu - показать меню
+                        • /reset - сбросить прогресс
+                        • /upscore - +1000 очков (админ)
+                        
+                        💡 Совет: Просто нажимай кнопки в меню!
+                        """;
                 sendMessage(chatId, helpText, keyboardFactory.createMainMenuKeyboard(chatId));
-                break;
-
-            case "/menu":
-                sendMainMenu(chatId);
-                break;
-
-            default:
-                sendMessage(chatId, "🤔 Неизвестная команда. Напиши /help для списка команд.",
-                        keyboardFactory.createMainMenuKeyboard(chatId));
+            }
+            case "/menu" -> sendMainMenu(chatId);
+            case "/reset" -> {
+                userProgressService.resetUser(chatId);
+                sendMessage(chatId, "Сброс очков!", keyboardFactory.createMainMenuKeyboard(chatId));
+            }
+            case "/upscore" -> {
+                userProgressService.upScore(chatId);
+                sendMessage(chatId, "Кол-во + 1000 очков!", keyboardFactory.createMainMenuKeyboard(chatId));
+            }
+            default -> sendMessage(chatId, "🤔 Неизвестная команда. Напиши /help для списка команд.",
+                    keyboardFactory.createMainMenuKeyboard(chatId));
         }
     }
 
-    /**
-     * Проверить, является ли кнопка навигационной
-     */
-    private boolean isNavigationButton(String text) {
-        return text.equals("⬅️ Главное меню") ||
-                text.equals("⬅️ Назад к уровням") ||
-                text.equals("⬅️ Назад к задачам") ||
-                text.equals("📊 Моя статистика") ||
-                text.equals("🎯 Выбрать уровень");
+    private boolean isGlobalOrNavigationButton(String text) {
+        return NAV_BACK_MENU.equals(text)
+                || NAV_BACK_LEVELS.equals(text)
+                || NAV_BACK_TASKS.equals(text)
+                || NAV_BACK_INTO_MENU.equals(text)
+                || BTN_STATS.equals(text)
+                || BTN_CHOOSE_LEVEL.equals(text);
     }
 
-    /**
-     * Обработка навигационных кнопок
-     */
-    private void handleNavigationButton(String messageText, Long chatId, String state) {
+    private void handleGlobalOrNavigationButton(String messageText, Long chatId) {
         switch (messageText) {
-            case "⬅️ Главное меню":
-                sendMainMenu(chatId);
-                break;
-
-            case "⬅️ Назад к уровням":
-                showLevelSelection(chatId);
-                break;
-
-            case "⬅️ Назад к задачам":
-                // Возвращаемся к задачам текущего уровня
+            case NAV_BACK_MENU, NAV_BACK_INTO_MENU -> sendMainMenu(chatId);
+            case NAV_BACK_LEVELS, BTN_CHOOSE_LEVEL -> showLevelSelection(chatId);
+            case NAV_BACK_TASKS -> {
                 Level level = userCurrentLevel.get(chatId);
-                if (level != null) {
-                    showLevelTasks(chatId, level);
-                } else {
-                    showLevelSelection(chatId);
-                }
-                break;
-
-            case "📊 Моя статистика":
-                showStatistics(chatId);
-                break;
-
-            case "🎯 Выбрать уровень":
-                showLevelSelection(chatId);
-                break;
+                if (level != null) showLevelTasks(chatId, level);
+                else showLevelSelection(chatId);
+            }
+            case BTN_STATS -> showStatistics(chatId);
+            default -> sendMainMenu(chatId);
         }
     }
 
-    /**
-     * Показать главное меню
-     */
     private void sendMainMenu(Long chatId) {
         userState.remove(chatId);
         userLastTask.remove(chatId);
         userCurrentLevel.remove(chatId);
 
-        String response = "👋 Привет! Я бот для адаптации в проекте.\n" +
-                "Выбери нужный раздел:";
+        String response = """
+                👋 Привет! Я бот для адаптации в проекте.
+                Выбери нужный раздел:
+                """;
         sendMessage(chatId, response, keyboardFactory.createMainMenuKeyboard(chatId));
     }
 
-    /**
-     * Показать выбор уровней
-     */
     private void showLevelSelection(Long chatId) {
-        userState.put(chatId, "selecting_level");
+        userState.put(chatId, STATE_SELECTING_LEVEL);
         userCurrentLevel.remove(chatId);
 
-        String response = "📊 Выбери уровень:\n\n" +
-                "🔓 - доступен\n" +
-                "🔒 - заблокирован\n\n" +
-                userProgressService.getUserStats(chatId);
+        String response = """
+                📊 Выбери уровень:
+                
+                🔓 - доступен
+                🔒 - заблокирован
+                
+                %s
+                """.formatted(userProgressService.getUserStats(chatId));
+
         sendMessage(chatId, response, keyboardFactory.createLevelSelectionKeyboard(chatId));
     }
 
-    /**
-     * Показать задачи уровня
-     */
     private void showLevelTasks(Long chatId, Level level) {
-        userState.put(chatId, "viewing_level_" + level.getNumber());
+        userState.put(chatId, STATE_VIEWING_LEVEL_PREFIX + level.getNumber());
         userCurrentLevel.put(chatId, level);
         userLastTask.remove(chatId);
 
-        String response = String.format(
-                "%s %s\n\n" +
-                        "📝 Задания уровня:\n\n" +
-                        "✅ - выполнено\n" +
-                        "⬜ - не выполнено\n\n" +
-                        "Выбери задание:",
-                level.getEmoji(), level.getName()
-        );
+        String response = """
+                %s %s
+                
+                📝 Задания уровня:
+                
+                ✅ - выполнено
+                ⬜ - не выполнено
+                
+                Выбери задание:
+                """.formatted(level.getEmoji(), level.getName());
 
         sendMessage(chatId, response, keyboardFactory.createLevelTasksKeyboard(chatId, level));
     }
 
-    /**
-     * Показать статистику
-     */
     private void showStatistics(Long chatId) {
-        String stats = userProgressService.getUserStats(chatId);
-        sendMessage(chatId, stats, keyboardFactory.createMainMenuKeyboard(chatId));
+        sendMessage(chatId, userProgressService.getUserStats(chatId),
+                keyboardFactory.createMainMenuKeyboard(chatId));
     }
 
-    /**
-     * Показать информацию о проекте
-     */
     private void showProjectInfo(Long chatId) {
-        String response = "ℹ️ О проекте\n\n" +
-                "Название: Habit Tracker\n" +
-                "Технологии: Java, микросервисная архитектура\n" +
-                "Фреймворк: Spring Boot\n" +
-                "Сборка: Gradle 8.5\n" +
-                "База данных: PostgreSQL, MongoDB\n" +
-                "Брокер сообщений: Kafka\n" +
-                "Кэширование: Redis\n" +
-                "Контейнеры и оркестрация: Docker, MiniKube\n" +
-                "Мониторинг и логирование: Prometheus, Grafana, Grafana Loki, SLF4J\n" +
-                "Документация: Swagger, JavaDoc\n" +
-                "Миграции БД: Liquibase\n" +
-                "Тестирование: JUnit, SpringTest, Postman, Mockito, Testcontainers\n" +
-                "Инструменты: Postman, Swagger, curl для API тестов\n" +
-                "Покрытие тестами: JaCoCO\n" +
-                "Качество кода: CheckStyle, SonarQube plugin IDEA, SonarQube server\n" +
-                "Контроль версий: Git, GitLab\n" +
-                "CI/CD: GitLab CI\n" +
-                "Команда: Твоя awesome команда!\n\n" +
-                "📅 Версия: 1.0.0";
+        String response = """
+                ℹ️ *О проекте*
+                
+                *Название*: Habit Tracker
+                *Технологии*: Java, микросервисная архитектура
+                *Фреймворк*: Spring Boot
+                *Сборка*: Gradle
+                *База данных*: PostgreSQL
+                
+                📅 *Версия*: 1.0.0
+                """;
         sendMessage(chatId, response, keyboardFactory.createMainMenuKeyboard(chatId));
     }
 
-    /**
-     * Показать первые шаги (не работает нормально)
-     */
     private void showFirstSteps(Long chatId) {
-        userState.put(chatId, "first_steps");
+        userState.put(chatId, STATE_FIRST_STEPS);
 
-        String response = "🎯 Первые шаги в проекте\n\n" +
-                "Выбери этап, чтобы получить подробную инструкцию:";
+        String response = """
+                🎯 Первые шаги в проекте
+                
+                Выбери этап, чтобы получить подробную инструкцию:
+                """;
         sendMessage(chatId, response, keyboardFactory.createFirstStepsKeyboard());
     }
 
-    /**
-     * Обработка выбора уровня
-     */
     private void handleLevelSelection(String messageText, Long chatId) {
-        // Ищем уровень по имени или эмодзи
         for (Level level : Level.values()) {
-            if (messageText.contains(level.getName()) ||
-                    messageText.contains(level.getEmoji()) ||
-                    messageText.contains("Уровень " + level.getNumber())) {
+            if (messageText.contains(level.getName())
+                    || messageText.contains(level.getEmoji())
+                    || messageText.contains("Уровень " + level.getNumber())) {
 
-                // Проверяем доступность
                 if (!userProgressService.isLevelAccessible(chatId, level.getNumber())) {
-                    String lockedResponse = "❌ Уровень заблокирован!\n\n" +
-                            "Чтобы открыть этот уровень, выполни все задания предыдущего уровня.";
+                    String lockedResponse = """
+                            ❌ Уровень заблокирован!
+                            
+                            Чтобы открыть этот уровень, выполни все задания предыдущего уровня.
+                            """;
                     sendMessage(chatId, lockedResponse, keyboardFactory.createLevelSelectionKeyboard(chatId));
                     return;
                 }
 
-                // Показываем задания уровня
                 showLevelTasks(chatId, level);
                 return;
             }
         }
 
-        // Если не найден уровень, возвращаем в меню
         sendMainMenu(chatId);
     }
 
-    /**
-     * Обработка выбора задачи внутри уровня
-     */
     private void handleTaskInLevel(String messageText, Long chatId, String state) {
-        // Извлекаем номер уровня из состояния
-        String levelNumStr = state.replace("viewing_level_", "");
+        String levelNumStr = state.replace(STATE_VIEWING_LEVEL_PREFIX, "");
         int levelNumber = Integer.parseInt(levelNumStr);
         Level level = Level.getByNumber(levelNumber);
 
@@ -365,98 +330,64 @@ public class TelegramBotService extends TelegramLongPollingBot {
             return;
         }
 
-        // Это должна быть кнопка задачи
         handleTaskSelection(chatId, messageText, level);
     }
 
-    /**
-     * Обработка выбора конкретной задачи
-     */
     private void handleTaskSelection(Long chatId, String buttonText, Level level) {
-        System.out.println("Обработка выбора задачи: \"" + buttonText +
-                "\" для уровня: " + level.getName());
-
-        // Получаем taskId из текста кнопки
         String taskId = level.getTaskIdByButtonText(buttonText);
         if (taskId == null) {
-            System.out.println("❌ Не удалось определить taskId для кнопки: " + buttonText);
             sendMessage(chatId, "❌ Не удалось определить задание",
                     keyboardFactory.createMainMenuKeyboard(chatId));
             return;
         }
 
-        System.out.println("TaskId найден: " + taskId);
-
-        // Находим задачу
         Level.Task task = level.getTaskById(taskId);
         if (task == null) {
-            System.out.println("Задание не найдено по taskId: " + taskId);
             sendMessage(chatId, "❌ Задание не найдено",
                     keyboardFactory.createMainMenuKeyboard(chatId));
             return;
         }
 
-        // Сохраняем текущую задачу для пользователя
         userLastTask.put(chatId, taskId);
-        userState.put(chatId, "viewing_task");
+        userState.put(chatId, STATE_VIEWING_TASK);
 
-        // Проверяем, выполнена ли задача
         boolean isCompleted = userProgressService.isTaskCompleted(chatId, taskId);
 
-        // Формируем сообщение
-        String response;
-        if (isCompleted) {
-            response = String.format(
-                    "🎉 %s\n\n" +
-                            "%s\n\n" +
-                            "✅ Выполнено\n" +
-                            "⭐ Получено очков: %d",
-                    task.getName(),
-                    level.getTaskDescription(taskId),
-                    task.getPoints()
-            );
-        } else {
-            response = String.format(
-                    "📋 *%s*\n\n" +
-                            "%s\n\n" +
-                            "⭐ Очков за выполнение: %d\n\n" +
-                            "Когда выполните задание, нажмите кнопку ниже:",
-                    task.getName(),
-                    level.getTaskDescription(taskId),
-                    task.getPoints()
-            );
-        }
+        String description = taskDescriptionService.getTaskDescription(taskId);
+
+        String response = isCompleted
+                ? """
+                🎉 %s
+                
+                %s
+                
+                ✅ Выполнено
+                ⭐ Получено очков: %d
+                """.formatted(task.name(), description, task.points())
+                : """
+                📋 *%s*
+                
+                %s
+                
+                ⭐ Очков за выполнение: %d
+                
+                Когда выполните задание, нажмите кнопку ниже:
+                """.formatted(task.name(), description, task.points());
 
         sendMessage(chatId, response, keyboardFactory.createTaskDetailKeyboard(chatId, taskId));
     }
 
-    /**
-     * Обработка действий в просмотре задачи
-     */
     private void handleTaskAction(String messageText, Long chatId) {
-        switch (messageText) {
-            case "✅ Я выполнил это задание!":
-                handleTaskCompletionButton(chatId);
-
-            // Возвращаемся к задачам текущего уровня
-            Level level = userCurrentLevel.get(chatId);
-            if (level != null) {
-                showLevelTasks(chatId, level);
-            } else {
-                showLevelSelection(chatId);
-            }
-            break;
-            default:
-                sendMessage(chatId, "🤔 Выберите действие из кнопок ниже",
-                        keyboardFactory.createMainMenuKeyboard(chatId));
+        if (BTN_TASK_DONE.equals(messageText)) {
+            handleTaskCompletionButton(chatId);
+            return;
         }
+
+        sendMessage(chatId, "🤔 Выберите действие из кнопок ниже",
+                keyboardFactory.createMainMenuKeyboard(chatId));
     }
 
-    /**
-     * Обработка нажатия кнопки "Я выполнил это задание!"
-     */
     private void handleTaskCompletionButton(Long chatId) {
-        // Получаем последнюю выбранную задачу
         String taskId = userLastTask.get(chatId);
         if (taskId == null) {
             sendMessage(chatId, "❌ Сначала выберите задание",
@@ -464,62 +395,56 @@ public class TelegramBotService extends TelegramLongPollingBot {
             return;
         }
 
-        // Выполняем задание
-        UserProgressService.TaskCompletionResult result =
-                userProgressService.completeTask(chatId, taskId);
+        TaskCompletionResult result = userProgressService.completeTask(chatId, taskId);
+        sendMessage(chatId, result.message(), keyboardFactory.createMainMenuKeyboard(chatId));
 
-        // Отправляем результат
-        sendMessage(chatId, result.getMessage(),
-                keyboardFactory.createMainMenuKeyboard(chatId));
-
-        // Очищаем последнюю задачу
         userLastTask.remove(chatId);
-        userState.remove(chatId);
 
-        // Если разблокирован новый уровень
-        if (result.isLevelUnlocked() && result.getUser() != null) {
-            try {
-                Thread.sleep(1000);
-
-                Level newLevel = Level.getByNumber(result.getUser().getCurrentLevel());
-                String congratsMessage = String.format(
-                        "🎊 *ПОЗДРАВЛЯЕМ!*\n\n" +
-                                "Ты разблокировал новый уровень!\n" +
-                                "%s *%s*",
-                        newLevel.getEmoji(), newLevel.getName()
-                );
-
-                sendMessage(chatId, congratsMessage,
-                        keyboardFactory.createLevelSelectionKeyboard(chatId));
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
+        if (!result.success()) {
+            // оставляем state как viewing_task, чтобы пользователь мог нажать “назад”
+            userState.put(chatId, STATE_VIEWING_TASK);
+            return;
         }
+
+        if (result.levelUnlocked()) {
+            Level newLevel = Level.getByNumber(result.newLevelNumber());
+
+            userState.put(chatId, STATE_SELECTING_LEVEL);
+            userCurrentLevel.remove(chatId);
+
+            String congrats = """
+                    🎊 *ПОЗДРАВЛЯЕМ!*
+                    
+                    Ты разблокировал новый уровень!
+                    %s *%s*
+                    """.formatted(newLevel.getEmoji(), newLevel.getName());
+
+            sendMessage(chatId, congrats, keyboardFactory.createLevelSelectionKeyboard(chatId));
+            return;
+        }
+
+        // если уровень не разблокирован — возвращаем к списку задач текущего уровня
+        Level level = userCurrentLevel.get(chatId);
+        if (level != null) showLevelTasks(chatId, level);
+        else showLevelSelection(chatId);
     }
 
-    /**
-     * Универсальный метод отправки сообщения с клавиатурой
-     */
-    private void sendMessage(Long chatId, String text, ReplyKeyboardMarkup keyboard) {
-        SendMessage message = new SendMessage();
-        message.setChatId(String.valueOf(chatId));
-        message.setText(text);
-        message.setParseMode("Markdown");
-
-        if (keyboard != null) {
-            message.setReplyMarkup(keyboard);
-        }
+    private void sendMessage(Long chatId, String text, Object keyboard) {
+        SendMessage sendMessage = SendMessage.builder()
+                .chatId(String.valueOf(chatId))
+                .text(text)
+                .parseMode(PARSE_MODE_MARKDOWN)
+                .replyMarkup((ReplyKeyboard) keyboard)
+                .build();
 
         try {
-            execute(message);
-            System.out.println("✅ Sent message to chat " + chatId);
+            telegramClient.execute(sendMessage);
         } catch (TelegramApiException e) {
-            System.out.println("❌ Ошибка отправки: " + e.getMessage());
+            log.warn("Ошибка отправки сообщения: chatId={}, err={}", chatId, e.getMessage(), e);
         }
     }
 
-    @Override
-    public String getBotUsername() {
-        return config.getBotUsername();
+    public TaskDescriptionService getTaskDescriptionService() {
+        return taskDescriptionService;
     }
 }

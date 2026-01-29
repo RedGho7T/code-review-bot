@@ -2,6 +2,7 @@ package com.groviate.telegramcodereviewbot.repository;
 
 import com.groviate.telegramcodereviewbot.entity.UserScore;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -10,19 +11,10 @@ import java.util.List;
 
 public interface UserScoreRepository extends JpaRepository<UserScore, Long> {
 
-    @Query(value = """
-        SELECT 
-            us.user_id as userId,
-            MAX(us.username) as username,
-            MAX(us.first_name) as firstName,
-            SUM(us.score) as totalScore,
-            MAX(us.created_at) as lastScoreTime
-        FROM user_score us
-        GROUP BY us.user_id
-        ORDER BY SUM(us.score) DESC, MAX(us.created_at) DESC
-        LIMIT 5
-        """, nativeQuery = true)
-    List<Object[]> findTop5LeaderboardNative();
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("delete from UserScore us where us.user.id = :userId")
+    void deleteByUserId(Long userId);
 
     @Query(value = """
         SELECT 

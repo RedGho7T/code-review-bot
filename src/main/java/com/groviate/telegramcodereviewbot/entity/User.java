@@ -18,7 +18,6 @@ import lombok.NoArgsConstructor;
 import lombok.ToString;
 
 import java.time.LocalDateTime;
-import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -153,7 +152,7 @@ public class User {
         if (currentLevelEnum == null) return false;
 
         return currentLevelEnum.getTasks().stream()
-                .allMatch(task -> hasCompletedTask(task.getId()));
+                .allMatch(task -> hasCompletedTask(task.id()));
     }
 
     /**
