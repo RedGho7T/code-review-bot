@@ -5,6 +5,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 
 @Data
 @NoArgsConstructor
@@ -55,13 +56,13 @@ public class LeaderboardEntry {
         String displayName = getDisplayName();
 
         StringBuilder sb = new StringBuilder();
-        sb.append(String.format("%s *%d.* %s - *%d* очков",
+        sb.append(String.format("%s %d. %s - %d очков",
                 medal, rank, displayName, totalScore));
 
-        // Добавляем username, если есть (временно отключено из-за того что ломается markdown форматированием)
-//        if (username != null && !username.isEmpty()) {
-//            sb.append(String.format("\n   👤 @%s", username));
-//        }
+        // Добавляем username, если есть
+        if (username != null && !username.isEmpty()) {
+            sb.append(String.format("\n   👤 @%s", username));
+        }
 
         return sb.toString();
     }
