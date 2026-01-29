@@ -14,6 +14,12 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 
+/**
+ * Сервис управления прогрессом пользователя: регистрация/обновление пользователя,
+ * выполнение заданий, расчёт статистики и начисление очков.
+ *
+ * <p>Все операции, меняющие состояние пользователя, выполняются в транзакции.</p>
+ */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -21,10 +27,28 @@ public class UserProgressService {
 
     private static final int ADMIN_BONUS_POINTS = 1000;
 
+    private static final String USER_NOT_FOUND = "❌ Пользователь не найден";
+
+    private static final String USER_STATS_TEMPLATE = """
+            🏆 Твоя статистика:
+            
+            📊 Уровень: %d/%d
+            🎯 Текущий: %s %s
+            ✅ Заданий выполнено: %d/%d
+            ⭐ Очки: %d
+            🔓 Доступно уровней: %d
+            
+            💡 Следующий уровень: %s
+            """;
+
     private final UserRepository userRepository;
     private final UserScoreRepository userScoreRepository;
     private final CompletedTaskRepository completedTaskRepository;
 
+    /**
+     * Возвращает пользователя по chatId или создаёт нового, если его ещё нет.
+     * Обновляет username/firstName при изменении и фиксирует lastActivityAt.
+     */
     @Transactional
     public User getOrCreateUser(Long chatId, String telegramUsername, String firstName) {
         log.info("getOrCreateUser called: chatId={}, username='{}', firstName='{}'",
@@ -99,7 +123,7 @@ public class UserProgressService {
      */
     @Transactional(readOnly = true)
     public boolean isTaskCompleted(Long chatId, String taskId) {
-        return completedTaskRepository.findByChatIdAndTaskId(chatId, taskId).isPresent();
+        return completedTaskRepository.existsByChatIdAndTaskId(chatId, taskId);
     }
 
     /**
@@ -108,32 +132,32 @@ public class UserProgressService {
      * 1) Чистим БД (scores/tasks)
      * 2) Чистим коллекции в сущности (иначе JPA может попытаться пересоздать удаленные записи)
      * 3) Сбрасываем поля прогресса
-     *
+     * <p>
      * На данный момент (29.01) только сброс очков юзера, не более, так же команда убрана из /help
      * поскольку является админской и необходима только для более адекватного тестирования функций
      */
     @Transactional
-    public User resetUser(Long chatId) {
+    public void resetUser(Long chatId) {
         User user = getUserOrThrow(chatId);
-            user.setLastActivityAt(LocalDateTime.now());
+        user.setLastActivityAt(LocalDateTime.now());
 
-            UserScore score = new UserScore();
-            score.setUser(user);
-            score.setPoints(0);
+        UserScore score = new UserScore();
+        score.setUser(user);
+        score.setPoints(0);
 
-            userScoreRepository.save(score);
+        userScoreRepository.save(score);
 
-            user.setTotalPoints(0);
+        user.setTotalPoints(0);
 
-            return userRepository.save(user);
-        }
+        userRepository.save(user);
+    }
 
     /**
      * Админское начисление очков (+1000).
      * Делаем через добавление в user.scores + сохранение user (cascade сохранит score).
      */
     @Transactional
-    public User upScore(Long chatId) {
+    public void upScore(Long chatId) {
         User user = getUserOrThrow(chatId);
 
         user.getScores().add(UserScore.builder()
@@ -147,7 +171,7 @@ public class UserProgressService {
         user.setLastActivityAt(LocalDateTime.now());
 
         log.info("Admin bonus: chatId={}, userId={}, bonus={}", chatId, user.getId(), ADMIN_BONUS_POINTS);
-        return userRepository.save(user);
+        userRepository.save(user);
     }
 
     /**
@@ -172,7 +196,7 @@ public class UserProgressService {
         }
 
         // Быстрая проверка через БД (не через EAGER коллекцию)
-        if (isTaskCompleted(chatId, taskId)) {
+        if (completedTaskRepository.existsByChatIdAndTaskId(chatId, taskId)) {
             return TaskCompletionResult.error("Задание уже выполнено");
         }
 
@@ -202,39 +226,38 @@ public class UserProgressService {
     @Transactional(readOnly = true)
     public String getUserStats(Long chatId) {
         return userRepository.findByChatId(chatId)
-                .map(user -> {
-                    Level currentLevel = Level.getByNumber(user.getCurrentLevel());
-                    if (currentLevel == null) {
-                        return "❌ Некорректный уровень пользователя";
-                    }
+                .map(user -> buildUserStats(chatId, user))
+                .orElse(USER_NOT_FOUND);
+    }
 
-                    long completedTasksInLevel = currentLevel.getTasks().stream()
-                            .filter(task -> isTaskCompleted(chatId, task.id()))
-                            .count();
+    private String buildUserStats(Long chatId, User user) {
+        Level currentLevel = Level.getByNumber(user.getCurrentLevel());
 
-                    return String.format("""
-                            🏆 Твоя статистика:
+        long completedTasksInLevel = countCompletedTasksInLevel(chatId, currentLevel);
 
-                            📊 Уровень: %d/%d
-                            🎯 Текущий: %s %s
-                            ✅ Заданий выполнено: %d/%d
-                            ⭐ Очки: %d
-                            🔓 Доступно уровней: %d
+        String nextLevelHint = user.canUnlockNextLevel()
+                ? "Доступен!"
+                : currentLevel.getUnlockCondition();
 
-                            💡 Следующий уровень: %s
-                            """,
-                            user.getCurrentLevel(),
-                            Level.values().length,
-                            currentLevel.getEmoji(),
-                            currentLevel.getName(),
-                            completedTasksInLevel,
-                            currentLevel.getTasks().size(),
-                            user.getTotalPoints(),
-                            user.getMaxUnlockedLevel(),
-                            user.canUnlockNextLevel() ? "Доступен!" : currentLevel.getUnlockCondition()
-                    );
-                })
-                .orElse("❌ Пользователь не найден");
+        return USER_STATS_TEMPLATE.formatted(
+                user.getCurrentLevel(),
+                Level.values().length,
+                currentLevel.getEmoji(),
+                currentLevel.getName(),
+                completedTasksInLevel,
+                currentLevel.getTasks().size(),
+                user.getTotalPoints(),
+                user.getMaxUnlockedLevel(),
+                nextLevelHint
+        );
+    }
+
+    private long countCompletedTasksInLevel(Long chatId, Level level) {
+        var taskIds = level.getTasks().stream()
+                .map(Level.Task::id)
+                .toList();
+
+        return completedTaskRepository.countByChatIdAndTaskIdIn(chatId, taskIds);
     }
 
     private User getUserOrThrow(Long chatId) {

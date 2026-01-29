@@ -40,7 +40,7 @@ public class LeaderboardService {
         // Отладочный вывод
         LeaderboardService.log.info("СЮДА СМОТРИ СУЧАРА");
         for (LeaderboardEntry entry : entries) {
-            log.info("User: id=%d, firstName='%s', username='%s', score=%d%n",
+            log.info("User: id={}, firstName='{}', username='{}', score={}",
                     entry.getUserId(),
                     entry.getFirstName(),
                     entry.getUsername(),
@@ -69,7 +69,6 @@ public class LeaderboardService {
 
         return entries;
     }
-
 
     /**
      * Получаем List с топ-5 юзерами, возвращаем объект String для вывода инфы

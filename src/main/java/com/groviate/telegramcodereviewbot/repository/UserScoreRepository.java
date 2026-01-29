@@ -2,7 +2,6 @@ package com.groviate.telegramcodereviewbot.repository;
 
 import com.groviate.telegramcodereviewbot.entity.UserScore;
 import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -10,11 +9,6 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 public interface UserScoreRepository extends JpaRepository<UserScore, Long> {
-
-
-    @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query("delete from UserScore us where us.user.id = :userId")
-    void deleteByUserId(Long userId);
 
     @Query(value = """
         SELECT 
