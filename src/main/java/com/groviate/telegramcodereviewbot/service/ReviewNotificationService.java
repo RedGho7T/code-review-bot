@@ -101,7 +101,8 @@ public class ReviewNotificationService {
         }
 
         return "\n────────────\n"
-                + "📝 Оцени качество ревью: <a href=\"" + escapeHtml(formUrl) + "\">тыкни на меня</a>";
+                + "📝 Пожалуйста, оцени качество ревью: <a href=\""
+                + escapeHtml(formUrl) + "\">перейти по ссылке</a>";
     }
 
     private String limit(String text) {
