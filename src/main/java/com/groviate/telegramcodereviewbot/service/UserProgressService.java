@@ -81,40 +81,25 @@ public class UserProgressService {
      * 1) Чистим БД (scores/tasks)
      * 2) Чистим коллекции в сущности (иначе JPA может попытаться пересоздать удаленные записи)
      * 3) Сбрасываем поля прогресса
+     *
+     * На данный момент (29.01) только сброс очков юзера, не более, так же команда убрана из /help
+     * поскольку является админской и необходима только для более адекватных проверок
      */
     @Transactional
     public User resetUser(Long chatId) {
         User user = getUserOrThrow(chatId);
+            user.setLastActivityAt(LocalDateTime.now());
 
-        // 1) удаляем историю и задачи в БД
-        completedTaskRepository.deleteByUserId(user.getId());
-        userScoreRepository.deleteByUserId(user.getId());
+            UserScore score = new UserScore();
+            score.setUser(user);
+            score.setPoints(0);
 
-        // 2) чистим in-memory коллекции, чтобы не было “воскрешения” через cascade
-        if (user.getCompletedTasks() != null) {
-            user.getCompletedTasks().clear();
+            userScoreRepository.save(score);
+
+            user.setTotalPoints(0);
+
+            return userRepository.save(user);
         }
-        if (user.getScores() != null) {
-            user.getScores().clear();
-        }
-
-        // 3) сброс прогресса
-        user.setCurrentLevel(1);
-        user.setMaxUnlockedLevel(1);
-        user.setTotalPoints(0);
-        user.setLastActivityAt(LocalDateTime.now());
-
-        // (не обязательно) маркер “reset” в историю, 0 очков, на рейтинг не влияет
-        user.getScores().add(UserScore.builder()
-                .user(user)
-                .points(0)
-                .sourceType("reset")
-                .sourceId("manual")
-                .build());
-
-        log.info("Progress reset: chatId={}, userId={}", chatId, user.getId());
-        return userRepository.save(user);
-    }
 
     /**
      * Админское начисление очков (+1000).
