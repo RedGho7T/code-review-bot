@@ -11,4 +11,7 @@ public class TelegramProperties {
     private String botToken;
     private String botUsername;
     private String channelId;
+
+    // ссылка на Google Form для опроса качества ревью
+    private String feedbackFormUrl;
 }

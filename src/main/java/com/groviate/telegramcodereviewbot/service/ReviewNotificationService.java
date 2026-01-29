@@ -36,23 +36,27 @@ public class ReviewNotificationService {
         SendMessage message = SendMessage.builder()
                 .chatId(channelId)
                 .text(text)
+                .parseMode("HTML")
+                .disableWebPagePreview(true)
                 .build();
 
         try {
             telegramClient.execute(message);
             log.info("Уведомление о ревью отправлено в Telegram. runId={}, mr=!{}", event.runId(), event.mrIid());
         } catch (TelegramApiException e) {
-            log.warn("Не удалось отправить уведомление в Telegram. runId={}, mr=!{}, err={}",
-                    event.runId(), event.mrIid(), e.getMessage(), e);
+            log.warn("Не удалось отправить уведомление в Telegram. runId={}, mr=!{}, channelId={}, err={}",
+                    event.runId(), event.mrIid(), channelId, e.getMessage(), e);
         }
     }
 
     private String buildMessage(ReviewFinishedEvent event) {
         String urlPart = (event.mrUrl() == null || event.mrUrl().isBlank())
                 ? ""
-                : ("\nMR: " + event.mrUrl());
+                : ("\nMR: " + escapeHtml(event.mrUrl()));
 
         if (event.success()) {
+            String feedbackNote = buildFeedbackNote();
+
             return """
                     ✅ Code Review завершён
                     Project: %d
@@ -60,15 +64,16 @@ public class ReviewNotificationService {
                     Title: %s
                     Score: %d/10
                     Files: %d
-                    Run: %s%s
+                    RunId: %s%s%s
                     """.formatted(
                     event.projectId(),
                     event.mrIid(),
-                    safe(event.mrTitle()),
+                    escapeHtml(safe(event.mrTitle())),
                     event.score(),
                     event.filesChanged(),
-                    event.runId(),
-                    urlPart
+                    escapeHtml(event.runId()),
+                    urlPart,
+                    feedbackNote
             );
         }
 
@@ -78,15 +83,25 @@ public class ReviewNotificationService {
                 MR: !%d
                 Title: %s
                 Files: %d
-                Run: %s%s
+                RunId: %s%s
                 """.formatted(
                 event.projectId(),
                 event.mrIid(),
-                safe(event.mrTitle()),
+                escapeHtml(safe(event.mrTitle())),
                 event.filesChanged(),
-                event.runId(),
+                escapeHtml(event.runId()),
                 urlPart
         );
+    }
+
+    private String buildFeedbackNote() {
+        String formUrl = telegramProperties.getFeedbackFormUrl();
+        if (formUrl == null || formUrl.isBlank()) {
+            return "";
+        }
+
+        return "\n────────────\n"
+                + "📝 Оцени качество ревью: <a href=\"" + escapeHtml(formUrl) + "\">тыкни на меня</a>";
     }
 
     private String limit(String text) {
@@ -103,4 +118,15 @@ public class ReviewNotificationService {
     private String safe(String s) {
         return s == null ? "" : s;
     }
+
+    private String escapeHtml(String s) {
+        if (s == null) {
+            return "";
+        }
+        return s.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;");
+    }
 }
+

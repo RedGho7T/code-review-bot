@@ -4,6 +4,7 @@ telegram:
   bot-token: ${TELEGRAM_BOT_TOKEN:}
   bot-username: ${TELEGRAM_BOT_USERNAME:}
   channel-id: ${TELEGRAM_CHANNEL_ID}
+  feedback-form-url: ${TELEGRAM_FEEDBACK_FORM_URL:}
   broadcast:
     fixed-rate-ms: 5000
 
