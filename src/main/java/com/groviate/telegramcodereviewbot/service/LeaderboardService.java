@@ -1,5 +1,6 @@
 package com.groviate.telegramcodereviewbot.service;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import com.groviate.telegramcodereviewbot.dto.LeaderboardEntry;
 import com.groviate.telegramcodereviewbot.repository.UserScoreRepository;
@@ -11,6 +12,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class LeaderboardService {
@@ -34,6 +36,17 @@ public class LeaderboardService {
     @Transactional(readOnly = true)
     public String getFormattedLeaderboard() {
         List<LeaderboardEntry> entries = self.getObject().getTop5WeightedLeaderboard();
+
+        // Отладочный вывод
+        LeaderboardService.log.info("СЮДА СМОТРИ СУЧАРА");
+        for (LeaderboardEntry entry : entries) {
+            log.info("User: id=%d, firstName='%s', username='%s', score=%d%n",
+                    entry.getUserId(),
+                    entry.getFirstName(),
+                    entry.getUsername(),
+                    entry.getTotalScore());
+        }
+
         return formatLeaderboardAsString(entries);
     }
 
@@ -57,13 +70,17 @@ public class LeaderboardService {
         return entries;
     }
 
+
+    /**
+     * Получаем List с топ-5 юзерами, возвращаем объект String для вывода инфы
+     */
     private String formatLeaderboardAsString(List<LeaderboardEntry> entries) {
         if (entries.isEmpty()) {
             return "🏆 Пока никто не получил очки! Будьте первым! 🚀";
         }
 
         StringBuilder sb = new StringBuilder();
-        sb.append("🏆 *ТОП ИГРОКОВ* 🏆\n\n");
+        sb.append("🏆 ТОП ИГРОКОВ 🏆\n\n");
 
         for (LeaderboardEntry entry : entries) {
             sb.append(entry.toTelegramString()).append("\n\n");

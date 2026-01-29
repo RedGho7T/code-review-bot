@@ -26,25 +26,53 @@ public class UserProgressService {
     private final CompletedTaskRepository completedTaskRepository;
 
     @Transactional
-    public User getOrCreateUser(Long chatId, String username, String firstName) {
+    public User getOrCreateUser(Long chatId, String telegramUsername, String firstName) {
+        log.info("getOrCreateUser called: chatId={}, username='{}', firstName='{}'",
+                chatId, telegramUsername, firstName);
+
+        // Если все null - создаем "анонимного" пользователя для группы
+        if (telegramUsername == null && firstName == null) {
+            log.info("Creating anonymous user for group chatId={}", chatId);
+        }
+
         return userRepository.findByChatId(chatId)
                 .map(existing -> {
-                    // Обновляем данные, если изменились (Telegram иногда меняет username)
-                    if (username != null && !username.equals(existing.getTelegramUsername())) {
-                        existing.setTelegramUsername(username);
+                    boolean updated = false;
+
+                    // Обновляем только если новые данные не null и не пустые
+                    if (telegramUsername != null && !telegramUsername.trim().isEmpty()
+                            && !telegramUsername.equals(existing.getTelegramUsername())) {
+                        log.info("Updating username for chatId={}: {} -> {}",
+                                chatId, existing.getTelegramUsername(), telegramUsername);
+                        existing.setTelegramUsername(telegramUsername);
+                        updated = true;
                     }
-                    if (firstName != null && !firstName.equals(existing.getFirstName())) {
+
+                    if (firstName != null && !firstName.trim().isEmpty()
+                            && !firstName.equals(existing.getFirstName())) {
+                        log.info("Updating firstName for chatId={}: {} -> {}",
+                                chatId, existing.getFirstName(), firstName);
                         existing.setFirstName(firstName);
+                        updated = true;
                     }
 
                     existing.setLastActivityAt(LocalDateTime.now());
-                    return userRepository.save(existing);
+
+                    if (updated) {
+                        log.info("Saving updated user for chatId={}", chatId);
+                        return userRepository.save(existing);
+                    }
+
+                    return existing;
                 })
                 .orElseGet(() -> {
+                    log.info("Creating new user: chatId={}, username='{}', firstName='{}'",
+                            chatId, telegramUsername, firstName);
+
                     User created = User.builder()
                             .chatId(chatId)
-                            .telegramUsername(username)
-                            .firstName(firstName)
+                            .telegramUsername(telegramUsername != null ? telegramUsername : "")
+                            .firstName(firstName != null ? firstName : "")
                             .currentLevel(1)
                             .maxUnlockedLevel(1)
                             .totalPoints(0)
@@ -52,7 +80,6 @@ public class UserProgressService {
                             .lastActivityAt(LocalDateTime.now())
                             .build();
 
-                    log.info("Создан новый пользователь: chatId={}, username={}, firstName={}", chatId, username, firstName);
                     return userRepository.save(created);
                 });
     }
@@ -83,7 +110,7 @@ public class UserProgressService {
      * 3) Сбрасываем поля прогресса
      *
      * На данный момент (29.01) только сброс очков юзера, не более, так же команда убрана из /help
-     * поскольку является админской и необходима только для более адекватных проверок
+     * поскольку является админской и необходима только для более адекватного тестирования функций
      */
     @Transactional
     public User resetUser(Long chatId) {

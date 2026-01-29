@@ -148,7 +148,7 @@ public class TelegramBotService implements SpringLongPollingBot, LongPollingSing
             case BTN_MAIN_MENU -> sendMainMenu(chatId);
             case BTN_ABOUT -> showProjectInfo(chatId);
             case BTN_FIRST_STEPS -> showFirstSteps(chatId);
-            case "🏆 Лидерборд" -> sendMessage(chatId, leaderboardService.getFormattedLeaderboard(),
+            case "🏆 Лидерборд" -> sendLeaderboardMessage(chatId, leaderboardService.getFormattedLeaderboard(),
                     keyboardFactory.createMainMenuKeyboard(chatId));
             default -> sendMessage(chatId, "🤔 Я не понял запрос. Выбери вариант из клавиатуры.",
                     keyboardFactory.createMainMenuKeyboard(chatId));
@@ -432,6 +432,21 @@ public class TelegramBotService implements SpringLongPollingBot, LongPollingSing
                 .chatId(String.valueOf(chatId))
                 .text(text)
                 .parseMode(PARSE_MODE_MARKDOWN)
+                .replyMarkup((ReplyKeyboard) keyboard)
+                .build();
+
+        try {
+            telegramClient.execute(sendMessage);
+        } catch (TelegramApiException e) {
+            log.warn("Ошибка отправки сообщения: chatId={}, err={}", chatId, e.getMessage(), e);
+        }
+    }
+
+    private void sendLeaderboardMessage(Long chatId, String text, Object keyboard) {
+        SendMessage sendMessage = SendMessage.builder()
+                .chatId(String.valueOf(chatId))
+                .text(text)
+                .parseMode(null)
                 .replyMarkup((ReplyKeyboard) keyboard)
                 .build();
 
