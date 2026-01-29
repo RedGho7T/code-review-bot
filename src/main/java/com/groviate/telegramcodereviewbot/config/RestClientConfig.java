@@ -28,8 +28,8 @@ public class RestClientConfig {
         };
 
         return builder
-                .setConnectTimeout(Duration.ofSeconds(10))
-                .setReadTimeout(Duration.ofSeconds(120))
+                .connectTimeout(Duration.ofSeconds(10))
+                .readTimeout(Duration.ofSeconds(120))
                 .additionalInterceptors(auth)
                 .build();
     }
