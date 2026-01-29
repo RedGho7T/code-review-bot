@@ -1,6 +1,7 @@
 package com.groviate.telegramcodereviewbot.factory;
 
 import com.groviate.telegramcodereviewbot.entity.Level;
+import com.groviate.telegramcodereviewbot.entity.User;
 import com.groviate.telegramcodereviewbot.service.UserProgressService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -35,17 +36,23 @@ public class KeyboardFactory {
         row2.add(new KeyboardButton("🚀 Первые шаги"));
 
         KeyboardRow row3 = new KeyboardRow();
-        row3.add(new KeyboardButton(level1Unlocked ? "🔓 Уровень 1" : "🔒 Уровень 1"));
-        row3.add(new KeyboardButton(level2Unlocked ? "🔓 Уровень 2" : "🔒 Набери 100 очков"));
+        User user = userProgressService.getOrCreateUser(chatId, "", "");
 
-        KeyboardRow row4 = new KeyboardRow();
-        row4.add(new KeyboardButton(level3Unlocked ? "🔓 Уровень 3" : "🔒 Набери 200 очков"));
-        row4.add(new KeyboardButton("🏆 Лидерборд"));
+        if (user.getTotalPoints() >= 200) {
+            row3.add("🚀 Продвинутые задания");
+        } else {
+            row3.add("🔒 Набери 200 очков");
+        }
+
+        if (user.getTotalPoints() >= 100) {
+            row3.add("🏆 Лидерборд");
+        } else {
+            row3.add("🔒 Набери 100 очков");
+        }
 
         keyboard.add(row1);
         keyboard.add(row2);
         keyboard.add(row3);
-        keyboard.add(row4);
 
         return ReplyKeyboardMarkup.builder()
                 .keyboard(keyboard)
