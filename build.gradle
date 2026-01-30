@@ -15,6 +15,7 @@ java {
 }
 
 ext {
+    telegrambotsVersion = '9.2.1'
     springAiVersion = '1.1.0'
     okhttpVersion = '4.12.0'
     logstashVersion = '7.4'
@@ -43,6 +44,13 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+
+    // Telegram Bot API
+    implementation "org.telegram:telegrambots-springboot-longpolling-starter:${telegrambotsVersion}"
+    implementation "org.telegram:telegrambots-client:${telegrambotsVersion}"
+    implementation "org.telegram:telegrambots-longpolling:${telegrambotsVersion}"
+
+    implementation "org.apache.commons:commons-lang3:3.20.0"
 
     // DB & migrations
     runtimeOnly 'org.postgresql:postgresql'
@@ -165,4 +173,14 @@ tasks.register('jacocoIntegrationTestReport', JacocoReport) {
 
     sourceDirectories.setFrom files(sourceSets.main.allSource.srcDirs)
     classDirectories.setFrom files(sourceSets.main.output.classesDirs)
+}
+
+// Общий отчет Jacoco
+jacocoTestReport {
+    dependsOn test
+    reports {
+        xml.required = true
+        html.required = true
+        html.outputLocation = layout.buildDirectory.dir('reports/jacoco/jacocoTestReport')
+    }
 }

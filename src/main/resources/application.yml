@@ -1,4 +1,13 @@
 # Настройки AI review bot
+telegram:
+  enabled: true
+  bot-token: ${TELEGRAM_BOT_TOKEN:}
+  bot-username: ${TELEGRAM_BOT_USERNAME:}
+  channel-id: ${TELEGRAM_CHANNEL_ID}
+  feedback-form-url: ${TELEGRAM_FEEDBACK_FORM_URL:}
+  broadcast:
+    fixed-rate-ms: 5000
+
 code-review:
   # --- Основное управление ---
   enabled: true               # глобально включить/выключить бота
@@ -92,7 +101,7 @@ spring:
       ddl-auto: validate
     properties:
       hibernate:
-        dialect: org.hibernate.dialect.PostgreSQLDialect
+        dialect:
 
   flyway:
     enabled: true

@@ -2,6 +2,7 @@ package com.groviate.telegramcodereviewbot.service;
 
 import com.groviate.telegramcodereviewbot.client.GitLabMergeRequestClient;
 import com.groviate.telegramcodereviewbot.config.CodeReviewProperties;
+import com.groviate.telegramcodereviewbot.dto.ReviewFinishedEvent;
 import com.groviate.telegramcodereviewbot.entity.ReviewStatus;
 import com.groviate.telegramcodereviewbot.exception.CodeReviewBotException;
 import com.groviate.telegramcodereviewbot.model.CodeReviewResult;
@@ -9,6 +10,7 @@ import com.groviate.telegramcodereviewbot.repository.ReviewStatusRepository;
 import io.micrometer.core.instrument.Timer;
 import jakarta.persistence.OptimisticLockException;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
@@ -51,6 +53,7 @@ public class ReviewOrchestrator {
     private final ReviewOrchestrator self; //для асинхронного вызова
     private final ReviewMetricsService metrics;
     private static final Pattern ERROR_LINE = Pattern.compile("(?m)^error\\s*=\\s*(.+)$");
+    private final ApplicationEventPublisher eventPublisher;
 
     /**
      * @param props             - свойства приложения (enabled flag, dry-run mode, лимиты)
@@ -66,7 +69,7 @@ public class ReviewOrchestrator {
                               CodeReviewService codeReviewService,
                               GitLabCommentService commentService,
                               @Lazy ReviewOrchestrator self,
-                              ReviewMetricsService metrics) {
+                              ReviewMetricsService metrics, ApplicationEventPublisher eventPublisher) {
         this.props = props;
         this.statusRepository = statusRepository;
         this.mrClient = mrClient;
@@ -74,6 +77,7 @@ public class ReviewOrchestrator {
         this.commentService = commentService;
         this.self = self;
         this.metrics = metrics;
+        this.eventPublisher = eventPublisher;
     }
 
     /**
@@ -110,97 +114,225 @@ public class ReviewOrchestrator {
      */
     @Async("reviewExecutor")
     public void runReviewAsync(Integer projectId, Integer mrIid) {
+
         Timer.Sample sample = metrics.start();
-        String runId = UUID.randomUUID().toString().substring(0, 8);
+        ReviewRunContext ctx = new ReviewRunContext(projectId, mrIid, sample, shortRunId());
 
         try {
-            var mr = mrClient.getMergeRequest(projectId, mrIid);
-
-            if (mr == null) {
-                metrics.markSkipped(sample);
-                return;
-            }
-
-            if (!"opened".equalsIgnoreCase(mr.getStatus())) {
-                log.info("[{}] MR не открыт, пропускаем: {}/{}", runId, projectId, mrIid);
-                metrics.markSkipped(sample);
-                return;
-            }
-
-            if (Boolean.TRUE.equals(mr.getDraft()) || Boolean.TRUE.equals(mr.getWorkInProgress())) {
-                log.info("[{}] MR черновик или не завершен: {}/{}", runId, projectId, mrIid);
-                metrics.markSkipped(sample);
-                return;
-            }
-
-            String headSha = mr.getSha();
-            if (headSha == null || headSha.isBlank()) {
-                log.info("[{}] headSha отсутствует, пропускаем: {}/{}", runId, projectId, mrIid);
-                metrics.markSkipped(sample);
-                return;
-            }
-
-            if (!self.tryMarkRunning(projectId, mrIid, headSha)) {
-                log.info("[{}] Проверка уже проведена: {}/{}", runId, projectId, mrIid);
-                metrics.markSkipped(sample);
-                return;
-            }
-
-            safePublishStatus(projectId, mrIid, "[" + runId + "] Старт ревью. SHA=" + headSha);
-
-            var diffs = mrClient.getChanges(projectId, mrIid);
-            safePublishStatus(projectId, mrIid,
-                    "[" + runId
-                            + "] Анализируем изменения в (" + (diffs == null ? 0 : diffs.size()) + " файлов)…");
-
-            CodeReviewResult result = codeReviewService.analyzeCode(mr, diffs);
-
-            if (isOpenAiFallback(result)) {
-                String err = extractOpenAiError(result);
-
-                self.markFailed(projectId, mrIid, err);
-                metrics.markFailed(sample);
-
-                safePublishStatus(projectId, mrIid,
-                        "[" + runId + "] OpenAI недоступен — ревью не опубликовано. Причина: " + truncate(err, 300));
-
-                return;
-            }
-
-            safePublishStatus(projectId, mrIid,
-                    "[" + runId + "] Публикую ревью (score=" + result.getScore() + ")…");
-
-            commentService.publishReviewWithInline(projectId, mrIid, result, diffs);
-
-            self.markSuccess(projectId, mrIid, headSha);
-            metrics.markSuccess(sample);
-
-            safePublishStatus(projectId, mrIid,
-                    "[" + runId + "] Готово. Score=" + result.getScore() + "/10");
-
+            executeReview(ctx);
         } catch (CodeReviewBotException e) {
-            metrics.markFailed(sample);
-
-            String err = e.getCode() + ": " + (e.getMessage() == null ? "" : e.getMessage());
-            self.markFailed(projectId, mrIid, err);
-
-            safePublishStatus(projectId, mrIid,
-                    "[" + runId + "] Ошибка ревью: " + truncate(err, 300));
-
-            log.error("[{}] Ревью завершилось доменной ошибкой для: {}/{}", runId, projectId, mrIid, e);
-
+            handleBotException(ctx, e);
         } catch (Exception e) {
-            metrics.markFailed(sample);
-
-            String err = e.getClass().getSimpleName() + ": " + (e.getMessage() == null ? "" : e.getMessage());
-            self.markFailed(projectId, mrIid, err);
-
-            safePublishStatus(projectId, mrIid,
-                    "[" + runId + "] Ошибка ревью: " + truncate(err, 300));
-
-            log.error("[{}] Ревью завершилось ошибкой для: {}/{}", runId, projectId, mrIid, e);
+            handleUnexpectedException(ctx, e);
         }
     }
+
+    /**
+     * Выполняет основной сценарий ревью MR.
+     * <p>
+     * Последовательно:
+     * <ol>
+     *   <li>Получает MR и отбрасывает нецелевые состояния (не opened / draft / WIP)</li>
+     *   <li>Проверяет SHA и дедуплицирует ревью через {@link #tryMarkRunning(Integer, Integer, String)}</li>
+     *   <li>Получает diffs, запускает AI-анализ и публикует результат</li>
+     *   <li>Обновляет статус ревью в БД и метрики, публикует событие завершения</li>
+     * </ol>
+     * Исключения не перехватывает — они обрабатываются в {@link #runReviewAsync(Integer, Integer)}.
+     *
+     * @param ctx контекст текущего запуска ревью
+     */
+    private void executeReview(ReviewRunContext ctx) {
+
+        var mr = mrClient.getMergeRequest(ctx.projectId, ctx.mrIid);
+        if (mr == null) {
+            metrics.markSkipped(ctx.sample);
+            return;
+        }
+
+        ctx.mrTitle = safeText(mr.getTitle());
+        ctx.mrUrl = safeText(mr.getWebUrl());
+
+        if (!"opened".equalsIgnoreCase(mr.getStatus())) {
+            log.info("[{}] MR не открыт, пропускаем: {}/{}", ctx.runId, ctx.projectId, ctx.mrIid);
+            metrics.markSkipped(ctx.sample);
+            return;
+        }
+
+        if (Boolean.TRUE.equals(mr.getDraft()) || Boolean.TRUE.equals(mr.getWorkInProgress())) {
+            log.info("[{}] MR черновик или не завершен: {}/{}", ctx.runId, ctx.projectId, ctx.mrIid);
+            metrics.markSkipped(ctx.sample);
+            return;
+        }
+
+        String headSha = mr.getSha();
+        if (headSha == null || headSha.isBlank()) {
+            log.info("[{}] headSha отсутствует, пропускаем: {}/{}", ctx.runId, ctx.projectId, ctx.mrIid);
+            metrics.markSkipped(ctx.sample);
+            return;
+        }
+
+        if (!self.tryMarkRunning(ctx.projectId, ctx.mrIid, headSha)) {
+            log.info("[{}] Проверка уже проведена: {}/{}", ctx.runId, ctx.projectId, ctx.mrIid);
+            metrics.markSkipped(ctx.sample);
+            return;
+        }
+
+        safePublishStatus(ctx.projectId, ctx.mrIid, "[" + ctx.runId + "] Старт ревью. SHA=" + headSha);
+
+        var diffs = mrClient.getChanges(ctx.projectId, ctx.mrIid);
+        ctx.diffsCount = diffs == null ? 0 : diffs.size();
+
+        safePublishStatus(ctx.projectId, ctx.mrIid,
+                "[" + ctx.runId + "] Анализируем изменения в (" + ctx.diffsCount + " файлов)…");
+
+        CodeReviewResult result = codeReviewService.analyzeCode(mr, diffs);
+
+        if (isOpenAiFallback(result)) {
+            handleOpenAiFallback(ctx, extractOpenAiError(result));
+            return;
+        }
+
+        int score = result.getScore() != null ? result.getScore() : 0;
+
+        safePublishStatus(ctx.projectId, ctx.mrIid,
+                "[" + ctx.runId + "] Публикую ревью (score=" + score + ")…");
+
+        commentService.publishReviewWithInline(ctx.projectId, ctx.mrIid, result, diffs);
+
+        self.markSuccess(ctx.projectId, ctx.mrIid, headSha);
+        metrics.markSuccess(ctx.sample);
+
+        publishFinishedEvent(ctx, score, true);
+
+        safePublishStatus(ctx.projectId, ctx.mrIid,
+                "[" + ctx.runId + "] Готово. Score=" + score + "/10");
+    }
+
+    /**
+     * Обрабатывает сценарий fallback, когда OpenAI недоступен или circuit breaker открыт.
+     * <p>
+     * Помечает ревью как FAILED, фиксирует метрики и публикует статус в MR.
+     * Ревью/inline-комментарии при этом не публикуются.
+     *
+     * @param ctx контекст текущего запуска ревью
+     * @param err описание причины fallback (будет обрезано для статуса)
+     */
+    private void handleOpenAiFallback(ReviewRunContext ctx, String err) {
+        self.markFailed(ctx.projectId, ctx.mrIid, err);
+        metrics.markFailed(ctx.sample);
+
+        safePublishStatus(ctx.projectId, ctx.mrIid,
+                "[" + ctx.runId + "] OpenAI недоступен — ревью не опубликовано. Причина: "
+                        + truncate(err, 300));
+
+        publishFinishedEvent(ctx, 0, false);
+    }
+
+    /**
+     * Обрабатывает доменную ошибку ревью ({@link CodeReviewBotException}).
+     * <p>
+     * Обновляет статус в БД, фиксирует метрики, публикует статус-комментарий в MR
+     * и отправляет событие завершения.
+     *
+     * @param ctx контекст текущего запуска ревью
+     * @param e  доменное исключение (с кодом и сообщением)
+     */
+    private void handleBotException(ReviewRunContext ctx, CodeReviewBotException e) {
+        metrics.markFailed(ctx.sample);
+
+        String err = e.getCode() + ": " + safeText(e.getMessage());
+        self.markFailed(ctx.projectId, ctx.mrIid, err);
+
+        publishFinishedEvent(ctx, 0, false);
+
+        safePublishStatus(ctx.projectId, ctx.mrIid,
+                "[" + ctx.runId + "] Ошибка ревью: " + truncate(err, 300));
+
+        log.error("[{}] Ревью завершилось доменной ошибкой для: {}/{}", ctx.runId, ctx.projectId, ctx.mrIid, e);
+    }
+
+    /**
+     * Обрабатывает непредвиденную ошибку выполнения ревью.
+     * <p>
+     * Обновляет статус в БД, фиксирует метрики, публикует статус-комментарий в MR
+     * и отправляет событие завершения.
+     *
+     * @param ctx контекст текущего запуска ревью
+     * @param e  исключение (любое, кроме {@link CodeReviewBotException})
+     */
+    private void handleUnexpectedException(ReviewRunContext ctx, Exception e) {
+        metrics.markFailed(ctx.sample);
+
+        String err = e.getClass().getSimpleName() + ": " + safeText(e.getMessage());
+        self.markFailed(ctx.projectId, ctx.mrIid, err);
+
+        publishFinishedEvent(ctx, 0, false);
+
+        safePublishStatus(ctx.projectId, ctx.mrIid,
+                "[" + ctx.runId + "] Ошибка ревью: " + truncate(err, 300));
+
+        log.error("[{}] Ревью завершилось ошибкой для: {}/{}", ctx.runId, ctx.projectId, ctx.mrIid, e);
+    }
+
+    /**
+     * Публикует событие завершения ревью в Spring ApplicationEventPublisher.
+     * <p>
+     * Используется для внешних уведомлений/аналитики (например, логирование, телеметрия).
+     *
+     * @param ctx       контекст текущего запуска ревью
+     * @param score     итоговый score (0..10)
+     * @param published true если ревью было опубликовано в MR, иначе false
+     */
+    private void publishFinishedEvent(ReviewRunContext ctx, int score, boolean published) {
+        eventPublisher.publishEvent(new ReviewFinishedEvent(
+                ctx.runId,
+                ctx.projectId,
+                ctx.mrIid,
+                ctx.mrTitle,
+                ctx.mrUrl,
+                score,
+                ctx.diffsCount,
+                published
+        ));
+    }
+
+    /**
+     * Null-safe нормализация строки: превращает null в пустую строку.
+     *
+     * @param value исходная строка (может быть null)
+     * @return непустая ссылка на строку ("" если вход был null).
+     */
+    private static String safeText(String value) {
+        return value == null ? "" : value;
+    }
+
+    /**
+     * Генерирует короткий идентификатор запуска ревью для логов и статусных сообщений.
+     *
+     * @return строка длиной 8 символов
+     */
+    private static String shortRunId() {
+        return UUID.randomUUID().toString().substring(0, 8);
+    }
+
+    private static final class ReviewRunContext {
+        private final Integer projectId;
+        private final Integer mrIid;
+        private final Timer.Sample sample;
+        private final String runId;
+
+        private String mrTitle = "";
+        private String mrUrl = "";
+        private int diffsCount = 0;
+
+        private ReviewRunContext(Integer projectId, Integer mrIid, Timer.Sample sample, String runId) {
+            this.projectId = projectId;
+            this.mrIid = mrIid;
+            this.sample = sample;
+            this.runId = runId;
+        }
+    }
+
 
     /**
      * Атомарно пытается отметить что ревью началось
