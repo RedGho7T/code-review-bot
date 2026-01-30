@@ -13,22 +13,16 @@ public record TaskCompletionResult(
         boolean levelUnlocked,
         Integer newLevelNumber
 ) {
-    // Методы-адаптеры под старый стиль вызовов (если где-то уже было get/is)
-    public boolean isSuccess() { return success; }
-    public String getMessage() { return message; }
-    public Level.Task getTask() { return task; }
-    public boolean isLevelUnlocked() { return levelUnlocked; }
-    public Integer getNewLevelNumber() { return newLevelNumber; }
 
     public static TaskCompletionResult success(Level.Task task, boolean levelUnlocked, Integer newLevelNumber) {
         String text = String.format("""
-                ✅ Задание выполнено!
-
-                🎯 %s
-                ⭐ +%d очков
-
-                %s
-                """,
+                        ✅ Задание выполнено!
+                        
+                        🎯 %s
+                        ⭐ +%d очков
+                        
+                        %s
+                        """,
                 task.name(),
                 task.points(),
                 levelUnlocked ? "🎉 Новый уровень разблокирован!" : ""
@@ -38,6 +32,7 @@ public record TaskCompletionResult(
     }
 
     public static TaskCompletionResult error(String errorMessage) {
-        return new TaskCompletionResult(false, "❌ " + errorMessage, null, false, null);
+        return new TaskCompletionResult(false, "❌ "
+                + errorMessage, null, false, null);
     }
 }

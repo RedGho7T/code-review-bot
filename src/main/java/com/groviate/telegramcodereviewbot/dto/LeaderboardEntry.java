@@ -5,7 +5,6 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 
 @Data
 @NoArgsConstructor
@@ -21,12 +20,17 @@ public class LeaderboardEntry {
     @Override
     public String toString() {
 
-        String displayName = firstName != null && !firstName.isEmpty()
-                ? firstName
-                : (username != null && !username.isEmpty() ? username : "Пользователь");
+        String displayName;
+        if (firstName != null && !firstName.isEmpty()) {
+            displayName = firstName;
+        } else if (username != null && !username.isEmpty()) {
+            displayName = username;
+        } else {
+            displayName = "Пользователь";
+        }
 
-        return String.format("🏆 %d. %s | @%s - %d очков \n",
-                rank, displayName, username , totalScore);
+        return String.format("🏆 %d. %s | @%s - %d очков %n",
+                rank, displayName, username, totalScore);
     }
 
 
@@ -42,12 +46,12 @@ public class LeaderboardEntry {
     }
 
     private String getMedalEmoji() {
-        switch (rank) {
-            case 1: return "🥇";
-            case 2: return "🥈";
-            case 3: return "🥉";
-            default: return "▫️";
-        }
+        return switch (rank) {
+            case 1 -> "🥇";
+            case 2 -> "🥈";
+            case 3 -> "🥉";
+            default -> "▫️";
+        };
     }
 
     // Метод для Telegram-форматирования
@@ -61,7 +65,7 @@ public class LeaderboardEntry {
 
         // Добавляем username, если есть
         if (username != null && !username.isEmpty()) {
-            sb.append(String.format("\n   👤 @%s", username));
+            sb.append(String.format("%n   👤 @%s", username));
         }
 
         return sb.toString();
